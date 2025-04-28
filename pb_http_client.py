@@ -15,7 +15,11 @@ class PuzzlebotHttpClient:
             params["v"] = linear
         if angular is not None:
             params["w"] = angular
-        response = requests.get(f"{self.base_url}/cmd_vel", params=params)
+        try:
+            response = requests.get(f"{self.base_url}/cmd_vel", params=params)
+        except Exception as ex:
+            print("Error sending velocity:", ex)
+            return None
 
     def send_vel_async(self, linear, angular):
         threading.Thread(target=self.send_vel, args=(linear, angular), daemon=True).start()
@@ -39,8 +43,8 @@ class PuzzlebotHttpClient:
             return None
         return frame
 
-    def get_pose(self):
-        response = requests.get(f"{self.base_url}/pose")
+    def get_state(self):
+        response = requests.get(f"{self.base_url}/state")
         if response.status_code == 200:
             return response.json()
         else:
