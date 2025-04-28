@@ -44,7 +44,7 @@ class PoseEstimator(Node):
         self.tf_broadcaster = TransformBroadcaster(self)
 
         # Timers: sampling (high freq) and printing (low freq)
-        self.create_timer(1 / 100, self.sampling_loop)
+        self.create_timer(1 / 400, self.sampling_loop)
         self.create_timer(1 / 4, self.print_loop)
 
         self.get_logger().info('PoseEstimator is active and listening to /robot_vel.')
@@ -99,7 +99,7 @@ class PoseEstimator(Node):
 
     def print_loop(self):
         theta_deg = self.theta * 180.0 / math.pi
-        self.get_logger().info(
+        print(
             f"V: {self.linear_velocity:.2f} m/s | W: {self.angular_velocity * 180/math.pi:.2f}°/s | "
             f"Theta: {theta_deg:.2f}° | X: {self.x:.2f} | Y: {self.y:.2f} | "
             f"Factor: {self.angular_factor:.3f}"

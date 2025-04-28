@@ -19,7 +19,6 @@ class PuzzlebotHttpClient:
             response = requests.get(f"{self.base_url}/cmd_vel", params=params)
         except Exception as ex:
             print("Error sending velocity:", ex)
-            return None
 
     def send_vel_async(self, linear, angular):
         threading.Thread(target=self.send_vel, args=(linear, angular), daemon=True).start()

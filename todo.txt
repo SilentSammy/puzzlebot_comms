@@ -1,4 +1,4 @@
-- attempt to send a sine wave at high frequencies
++ attempt to send a sine wave at high frequencies
     - if problems arise, correct by waiting for request to finish
 - create accelerateTo function
     - allow accelerateTo to take either a rate or a deadline

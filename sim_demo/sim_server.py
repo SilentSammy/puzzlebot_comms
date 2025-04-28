@@ -30,12 +30,8 @@ def video_source():
 
 try:
     sim.startSimulation()
-    web.http_endpoints = {
-        "cmd_vel": receive_vel,
-    }
-    web.video_endpoints = {
-        "car_cam": video_source,
-    }
+    web.http_endpoints["cmd_vel"] = receive_vel
+    web.video_endpoints["car_cam"] = video_source
     web.start_webserver(threaded=False)
 finally:
     sim.stopSimulation()
