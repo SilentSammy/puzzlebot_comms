@@ -8,8 +8,10 @@ import web
 import threading
 
 # Connect and get simulator objects
-car_cam = sim.getObject('/LineTracer/visionSensor')
+car_cam = sim.getObject('/Puzzlebot/visionSensor')
 car = DifferentialCar()
+car.left_wheel = sim.getObject('/Puzzlebot/DynamicLeftJoint')
+car.right_wheel = sim.getObject('/Puzzlebot/DynamicRightJoint')
 sim_lock = threading.Lock()
 
 def receive_vel(request):
@@ -18,7 +20,7 @@ def receive_vel(request):
     with sim_lock:
         car.linear_speed = lin_vel if lin_vel is not None else car.linear_speed
         car.angular_speed = ang_vel if ang_vel is not None else car.angular_speed
-    return f"Linear Velocity: {car.linear_speed}, Angular Velocity: {car.angular_speed}", 200
+    return {"v": car.linear_speed, "w": car.angular_speed}, 200
 
 def video_source():
     with sim_lock:

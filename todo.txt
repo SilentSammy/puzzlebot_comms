@@ -1,5 +1,5 @@
++ rename package to pb_http_server and node to pb_http_server.py
 + attempt to send a sine wave at high frequencies
-    - if problems arise, correct by waiting for request to finish
+    - if problems arise, correct by waiting for request to finish and queing latest attempt
 - create accelerateTo function
     - allow accelerateTo to take either a rate or a deadline
-- rename package to pb_http_server and node to pb_http_server.py

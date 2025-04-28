@@ -8,39 +8,37 @@ class PuzzlebotHttpClient:
     def __init__(self, base_url="http://192.168.137.139:5000"):
         self.base_url = base_url
         self.cap = None
-    
-    def send_vel(self, linear=None, angular=None):
-        params = {}
-        if linear is not None:
-            params["v"] = linear
-        if angular is not None:
-            params["w"] = angular
-        try:
-            response = requests.get(f"{self.base_url}/cmd_vel", params=params)
-        except Exception as ex:
-            print("Error sending velocity:", ex)
+        self.prev_v = None
+        self.prev_w = None
 
-    def send_vel_async(self, linear, angular):
-        threading.Thread(target=self.send_vel, args=(linear, angular), daemon=True).start()
-        
-    def start_stream(self):
+    def _send_vel(self, v=None, w=None):
+            params = {}
+            if v is not None:
+                params["v"] = v
+            if w is not None:
+                params["w"] = w
+            try:
+                response = requests.get(f"{self.base_url}/cmd_vel", params=params)
+                return response.json()
+            except Exception as ex:
+                print("Error sending velocity:", ex)
+            
+    def _start_stream(self):
         self.cap = cv2.VideoCapture(f"{self.base_url}/car_cam")
         return self.cap.isOpened()
 
-    def stop_stream(self):
+    def _stop_stream(self):
         if self.cap is not None:
             self.cap.release()
             self.cap = None
 
-    def get_frame(self):
-        if self.cap is None:
-            return None
-        ret, frame = self.cap.read()
-        if not ret:
-            self.stop_stream()
-            self.start_stream()
-            return None
-        return frame
+    def send_vel(self, v=None, w=None, wait_for_completion=False, force=False):
+        if force or self.prev_v != v or self.prev_w != w:
+            self.prev_v = v
+            self.prev_w = w
+            if wait_for_completion:
+                return self._send_vel(v, w)
+            threading.Thread(target=self._send_vel, args=(v, w), daemon=True).start()
 
     def get_state(self):
         response = requests.get(f"{self.base_url}/state")
@@ -48,3 +46,19 @@ class PuzzlebotHttpClient:
             return response.json()
         else:
             return None
+
+    def get_frame(self):
+        if self.cap is None:
+            # Automatically start the stream if it's not running
+            if not self._start_stream():
+                return None
+        ret, frame = self.cap.read()
+        if not ret:
+            # Stream might have failed, try restarting
+            self._stop_stream()
+            if not self._start_stream():
+                return None
+            ret, frame = self.cap.read()
+            if not ret:
+                return None
+        return frame

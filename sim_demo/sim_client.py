@@ -1,3 +1,5 @@
+import sys, os
+sys.path[:0] = [os.path.abspath(os.path.join(os.path.dirname(__file__), p)) for p in ('..', '../..')]
 import math
 import cv2
 import requests
