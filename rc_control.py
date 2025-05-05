@@ -32,11 +32,10 @@ def show_frame(frame, name="Frame", max_size=400):
     cv2.imshow(name, resized_frame)
     cv2.setWindowProperty(name, cv2.WND_PROP_TOPMOST, 1)
     cv2.setWindowProperty(name, cv2.WND_PROP_AUTOSIZE, cv2.WINDOW_NORMAL)  # Make the window resizable
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+    if cv2.waitKey(1) & 0xFF == 27:
         raise KeyboardInterrupt
 
 try:
-    # puzzlebot._start_stream()
     while True:
         frame = puzzlebot.get_frame()
 
@@ -50,11 +49,17 @@ try:
             markers, ids = find_arucos(frame)
             if markers:
                 marker = markers[0]
-                _, _, _, cam_dist, _, cam_yaw = estimate_marker_pose(marker_corners=marker, frame=frame, ref_size=0.063300535, fov_x=math.radians(60))
+                _, _, _, cam_dist, _, cam_yaw = estimate_marker_pose(marker_corners=markers[0], frame=frame, ref_size=0.063300535, fov_x=math.radians(60))
                 print(f"Dist: {cam_dist:.2f}, Yaw: {math.degrees(cam_yaw):.2f}")
                 yaw = heading_pid(cam_yaw)
-                factor = 1 - (abs(cam_yaw) / math.radians(yaw_threshold)) if abs(cam_yaw) < math.radians(yaw_threshold) else 0
-                throttle = factor * (-distance_pid(cam_dist))
+                
+                # Compute interpolation factor 'alpha'
+                # alpha = 0 when yaw error is >= threshold, alpha = 1 when yaw error is 0.
+                alpha = 1 - (abs(cam_yaw) / math.radians(yaw_threshold)) if abs(cam_yaw) < math.radians(yaw_threshold) else 0
+
+                # Interpolate the distance input: when alpha is 0, measured distance is set to the setpoint.
+                measured_distance = (1 - alpha) * distance_pid.setpoint + alpha * cam_dist
+                throttle = -distance_pid(measured_distance)
             else:
                 throttle = 0
                 yaw = 0
