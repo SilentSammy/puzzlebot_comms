@@ -1,5 +1,36 @@
 from pynput import keyboard
 
+class ToggleManager:
+    def __init__(self, keys):
+        self._keys = keys
+        # Ensure all keys are initialized in the toggles dictionary.
+        for key in keys:
+            if key not in toggles:
+                toggles[key] = False
+        self._prev_toggles = self.get_current_toggles()
+
+    def get_current_toggles(self):
+        # Return a list of the keys that are currently toggled.
+        return [key for key in self._keys if toggles[key]]
+
+    def get_active(self):
+        current_toggles = self.get_current_toggles()
+        if len(current_toggles) < 2: # If not multiple toggles are active, return the only one.
+            self._prev_toggles = current_toggles
+            return next(iter(current_toggles), None)
+        
+        # Get the newly toggled key that wasn't in the previous state.
+        new_toggles = [key for key in current_toggles if key not in self._prev_toggles]
+        new_toggle = next(iter(new_toggles), None) # Pick the first new toggle.
+
+        # Set all keys to False except the new toggle
+        for key in self._keys:
+            toggles[key] = key == new_toggle
+
+        # Update the previous toggles for the next check.
+        self._prev_toggles = self.get_current_toggles()
+        return new_toggle
+
 # Global sets/dictionaries to track state.
 pressed_keys = set()
 just_pressed_keys = set()
@@ -54,9 +85,11 @@ def _on_release(key):
 
 keyboard.Listener(on_press=_on_press, on_release=_on_release).start()
 
+# Example usage
 if __name__ == '__main__':
-    # Example usage
     import time
+
+    radio_buttons = ToggleManager(['1', '2', '3'])
     while True:
         if is_pressed('w'):
             print("W key is held down")
@@ -66,4 +99,7 @@ if __name__ == '__main__':
             print("Q key was pressed")
         if falling_edge('q'):
             print("Q key was released")
+        active_key = radio_buttons.get_active()
+        if active_key:
+            print(f"Active key: {active_key}")
         time.sleep(0.1)
