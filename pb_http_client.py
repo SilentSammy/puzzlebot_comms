@@ -5,9 +5,10 @@ import time
 import threading
 
 class PuzzlebotHttpClient:
-    def __init__(self, base_url="http://192.168.137.139:5000"):
+    def __init__(self, base_url="http://192.168.137.139:5000", safe_mode=True):
         self.base_url = base_url
         self.cap = None
+        self.safe_mode = safe_mode
         self.prev_v = None
         self.prev_w = None
 
@@ -18,7 +19,8 @@ class PuzzlebotHttpClient:
             if w is not None:
                 params["w"] = w
             try:
-                response = requests.get(f"{self.base_url}/cmd_vel", params=params)
+                endpoint = "/cmd_vel_safe" if self.safe_mode else "/cmd_vel"
+                response = requests.get(f"{self.base_url}{endpoint}", params=params)
                 return response.json()
             except Exception as ex:
                 print("Error sending velocity:", ex)

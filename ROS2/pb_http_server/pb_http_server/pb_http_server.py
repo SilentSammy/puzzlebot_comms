@@ -32,6 +32,31 @@ class RCServerNode(Node):
             return json.dumps({'v': self.v, 'w': self.w}), 200, {'Content-Type': 'application/json'}
         web.http_endpoints['cmd_vel'] = receive_vel
 
+
+        # --- cmd_vel_safe HTTP endpoint ---
+        self.safe_pub = self.create_publisher(Twist, '/cmd_vel_safe', 10)
+        self.v_safe = 0.0
+        self.w_safe = 0.0
+        def receive_safe(request):
+            # Parse query params, preserving old values if missing
+            new_v = request.args.get('v', type=float)
+            new_w = request.args.get('w', type=float)
+            self.v_safe = new_v if new_v is not None else self.v_safe
+            self.w_safe = new_w if new_w is not None else self.w_safe
+            # Publish safe command
+            msg = Twist()
+            msg.linear.x = self.v_safe
+            msg.angular.z = self.w_safe
+            self.safe_pub.publish(msg)
+            self.get_logger().info(
+                f'HTTP safe update -> published safe Twist(linear.x={self.v_safe}, angular.z={self.w_safe})'
+            )
+            # Return JSON response
+            return (json.dumps({'v': self.v_safe, 'w': self.w_safe}),
+                    200, {'Content-Type': 'application/json'})
+
+        web.http_endpoints['cmd_vel_safe'] = receive_safe
+
         # STATE HTTP ENDPOINT SETUP
         self.x = 0.0
         self.y = 0.0
@@ -61,12 +86,13 @@ class RCServerNode(Node):
         # CAR_CAM MJPEG STREAM SETUP
         self.gst_pipeline = (
             'nvarguscamerasrc ! '
-            'video/x-raw(memory:NVMM),width=1280,height=720,framerate=30/1 ! '
+            'video/x-raw(memory:NVMM),width=640,height=480,framerate=15/1 ! '
             'nvvidconv flip-method=0 ! '
             'video/x-raw,format=BGRx ! '
             'videoconvert ! '
             'video/x-raw,format=BGR ! '
-            'appsink'
+            # appsink caps to drop late frames and keep latency low
+            'appsink drop=true max-buffers=1'
         )
         self.cap = None
         self.cap_lock = threading.Lock()
