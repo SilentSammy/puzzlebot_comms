@@ -4,7 +4,7 @@ import cv2
 import requests
 import time
 import threading
-from keybrd import is_pressed, is_toggled, ToggleManager  # your keybrd module for key state detection
+from keybrd import is_pressed, is_toggled, rising_edge, ToggleManager  # your keybrd module for key state detection
 from pb_http_client import PuzzlebotHttpClient  # your custom client for sending commands
 from pose_estimation import find_arucos, estimate_marker_pose
 import pose_estimation as pe
@@ -23,6 +23,9 @@ max_thr = 0.5
 
 # Navigation algorithms
 def navigate_to_marker(frame):
+    # Static variables
+    max_yaw = math.radians(30)
+    max_thr = 0.2
     if not hasattr(navigate_to_marker, "pids"):
         navigate_to_marker.pids = {
             'yaw_pid': PID(Kp=1, Ki=0, Kd=0.1, setpoint=0.0, output_limits=(-max_yaw, max_yaw)),
@@ -49,15 +52,17 @@ def navigate_to_marker(frame):
         throttle = -thr_pid(measured_distance)
     else:
         throttle, yaw = 0, 0
+        # Write "Searching for ArUco" on the frame
+        cv2.putText(frame, "Searching for ArUco", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
 
     return throttle, yaw
 
 def follow_line(frame):
     # Static variables
-    max_yaw = math.radians(30)
-    max_thr = 0.1
+    max_yaw = math.radians(60)
+    max_thr = 0.2
     if not hasattr(follow_line, "yaw_pid"):
-        follow_line.yaw_pid = PID(Kp=0.25, Ki=0, Kd=0.1, setpoint=0.0, output_limits=(-max_yaw, max_yaw))
+        follow_line.yaw_pid = PID(Kp=0.5, Ki=0, Kd=0.1, setpoint=0.0, output_limits=(-max_yaw, max_yaw))
 
     if frame is None:
         return 0, 0
@@ -68,7 +73,7 @@ def follow_line(frame):
     _, mask = cv2.threshold(gray, 85, 255, cv2.THRESH_BINARY_INV)
     
     # Shrink the vertical field of view to the lower part of the frame.
-    v_fov = 0.25
+    v_fov = 0.3
     mask[:int(frame_height * (1-v_fov)), :] = 0
     
     # Erode the mask slightly to disconnect noisy connections.
@@ -102,13 +107,19 @@ def follow_line(frame):
             M = cv2.moments(line_contour)
             center_x = int(M["m10"] / M["m00"]) if M["m00"] != 0 else x + w//2
             normalized_x = (center_x - (frame_width/2)) / (frame_width/2)
-            print(f"Normalized center X (lower 20%): {normalized_x:.2f}")
+            print(f"Normalized center X: {normalized_x:.2f}")
             
             # Calculate the yaw and throttle values to follow the line.
             yaw = follow_line.yaw_pid(normalized_x)
             alignment = 1 - abs(normalized_x)
-            align_thres = 0.6  # adjust as needed
-            throttle = max_thr * ((alignment - align_thres) / (1 - align_thres)) if alignment >= align_thres else 0
+            align_thres = 0.25  # adjust as needed
+            throttle = max_thr * ((alignment - align_thres) / (1 - align_thres))
+        else:
+            # Write "line too far" on the frame
+            cv2.putText(frame, "Line too far", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+    else:
+        # Write "Searching for line" on the frame
+        cv2.putText(frame, "Searching for line", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
     
     return throttle, yaw
  
@@ -134,7 +145,9 @@ try:
         throttle, yaw = 0, 0
 
         # Safe mode selection
-        puzzlebot.safe_mode = not is_toggled('z') # Safe by default
+        if rising_edge('z'):
+            puzzlebot.safe_mode = not puzzlebot.safe_mode
+            print(f"Safe mode: {puzzlebot.safe_mode}")
 
         # Control mode selection
         state = radio_buttons.get_active()
