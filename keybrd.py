@@ -102,4 +102,7 @@ if __name__ == '__main__':
         active_key = radio_buttons.get_active()
         if active_key:
             print(f"Active key: {active_key}")
+        # Optionally print all pressed keys
+        if pressed_keys:
+            print(f"Pressed keys: {', '.join(pressed_keys)}")
         time.sleep(0.1)
