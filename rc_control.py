@@ -11,8 +11,8 @@ import pose_estimation as pe
 from simple_pid import PID
 
 # Connection
-# puzzlebot = PuzzlebotHttpClient("http://192.168.137.139:5000", safe_mode=True)
-puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
+puzzlebot = PuzzlebotHttpClient("http://192.168.137.139:5000", safe_mode=True)
+# puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
 
 # Maximum values for throttle and yaw
 max_yaw = math.radians(60)
@@ -98,7 +98,7 @@ def follow_line(frame):
 
     def get_line_candidates():
         # Convert to binary mask, only keeping pixels darker than dark_thres.
-        dark_thres = 85
+        dark_thres = 100
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         _, mask = cv2.threshold(gray, dark_thres, 255, cv2.THRESH_BINARY_INV)
         
@@ -112,37 +112,43 @@ def follow_line(frame):
 
         # Find contours in the modified mask, filtering out noise.
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        MIN_AREA = 400 # Minimum area of contours to consider
+        MIN_AREA = 1000 # Minimum area of contours to consider
         contours = [c for c in contours if cv2.contourArea(c) > MIN_AREA]
     
         return contours
 
-    def get_contour_line(c):
+    def get_contour_line(c, fix_vert=True):
         vx, vy, cx, cy = cv2.fitLine(c, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
         scale = 100  # Adjust scale as needed for visualization.
         pt1 = (int(cx - vx * scale), int(cy - vy * scale))
         pt2 = (int(cx + vx * scale), int(cy + vy * scale))
         angle = math.degrees(math.atan2(vy, vx))
+
+        if fix_vert:
+            # angle = angle # Placeholder for any angle correction logic.
+            angle = angle - 90 * np.sign(angle)
+
         return pt1, pt2, angle, cx, cy
 
     contours = get_line_candidates()
 
     # Show the direction of the line candidates
     for i, c in enumerate(contours):
-        pt1, pt2, _, _, _ = get_contour_line(c)
+        pt1, pt2, angle, cx, cy = get_contour_line(c)
         cv2.line(frame, pt1, pt2, (0, 255, 0), 2)
-        # print(f"Contour {i}: Angle: {angle:.2f} degrees") # Optionally print angles for debugging
+        cv2.putText(frame, str(i), (int(cx), int(cy)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+        print(f"Contour {i}: Angle: {angle:.2f} degrees") # Optionally print angles for debugging
 
     throttle, yaw = 0, 0
     if contours:
         def contour_key(c):
             # Define the maximum angle for clamping
-            max_angle = 45  # Adjust this value as needed
+            max_angle = 80  # Adjust this value as needed
             # Get the direction of the line and its centroid
             _, _, angle, cx, cy = get_contour_line(c)
             angle = max(min(angle, max_angle), -max_angle)
             # Compute ref_x based on angle: 0° -> center, +max_angle -> left, -max_angle -> right.
-            ref_x = (frame_width / 2) - (angle / max_angle) * (frame_width / 2)
+            ref_x = (frame_width / 2) + (angle / max_angle) * (frame_width / 2)
             # Draw ref_x on the frame for debugging
             cv2.line(frame, (int(ref_x), 0), (int(ref_x), frame_height), (0, 0, 255), 2)
             # Compute the error between the centroid and our adjusted reference.
@@ -150,40 +156,34 @@ def follow_line(frame):
             # Return a tuple for sorting: first sort by lowest centroid (i.e. largest cy) then by x error.
             return (x_err)
             
-        # Later in follow_line:
+        # Choose the best candidate
         sorted_contours = sorted(contours, key=contour_key)
         line_contour = sorted_contours[0]
-        x, y, w, h = cv2.boundingRect(line_contour)
         
-        # Draw the outline of line_contour on the original frame
+        # Draw the best candidate in green and the others in red.
         cv2.drawContours(frame, [line_contour], -1, (0, 255, 0), 2)
-
-        # Draw red contours around failed candidates
         for c in sorted_contours[1:]:
             cv2.drawContours(frame, [c], -1, (0, 0, 255), 2)
 
-        # If the contour isn't touching the bottom of the frame, do nothing.
-        if (y + h) >= int(frame_height * 0.80):
-            # Get the X position of the cropped area using moments.
-            # M = cv2.moments(line_contour)
-            # center_x = int(M["m10"] / M["m00"]) if M["m00"] != 0 else x + w//2
-            center_x = x + w // 2
-            normalized_x = (center_x - (frame_width/2)) / (frame_width/2)
-            cv2.line(frame, (center_x, 0), (center_x, frame_height), (255, 0, 0), 2)
-            
-            # Calculate the yaw and throttle values to follow the line.
-            yaw = follow_line.yaw_pid(normalized_x)
-            alignment = 1 - abs(normalized_x)
-            align_thres = 0.3  # adjust as needed
-            throttle = max_thr * ((alignment - align_thres) / (1 - align_thres))
-        else:
-            # Write "line too far" on the frame
-            cv2.putText(frame, "Line too far", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+        # Get the X position of the line in the frame.
+        x, y, w, h = cv2.boundingRect(line_contour)
+        center_x = x + w // 2
+        normalized_x = (center_x - (frame_width/2)) / (frame_width/2)
+        cv2.line(frame, (center_x, 0), (center_x, frame_height), (255, 0, 0), 2)
+        
+        # Adjust yaw to keep the line centered in the frame.
+        yaw = follow_line.yaw_pid(normalized_x)
+        
+        # Decrease throttle as the line moves away from the center.
+        alignment = 1 - abs(normalized_x) # 1 when centered, 0 when at the edge.
+        align_thres = 0.3 # Throttle will be max_thr when aligned, 0 at the threshold, and negative below the threshold.
+        throttle = max_thr * ((alignment - align_thres) / (1 - align_thres))
     else:
         # Write "Searching for line" on the frame
         cv2.putText(frame, "Searching for line", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
     
     return throttle, yaw
+    return 0, 0
 
 # Function to display the frame 
 def show_frame(frame, name="Frame", max_size=400):
