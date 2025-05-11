@@ -9,6 +9,7 @@ from pb_http_client import PuzzlebotHttpClient  # your custom client for sending
 from pose_estimation import find_arucos, estimate_marker_pose
 import pose_estimation as pe
 from simple_pid import PID
+import visual_navigation as vn
 
 # Connection
 # puzzlebot = PuzzlebotHttpClient("http://192.168.137.139:5000", safe_mode=True)
@@ -53,6 +54,7 @@ def navigate_to_marker(frame):
     # Static variables
     max_yaw = math.radians(30)
     max_thr = 0.2
+    yaw_threshold = 5.0  # The robot will start moving forward when the target is this many degrees from the center
     if not hasattr(navigate_to_marker, "pids"):
         navigate_to_marker.pids = {
             'yaw_pid': PID(Kp=1, Ki=0, Kd=0.1, setpoint=0.0, output_limits=(-max_yaw, max_yaw)),
@@ -60,7 +62,6 @@ def navigate_to_marker(frame):
         }
     yaw_pid = navigate_to_marker.pids['yaw_pid']
     thr_pid = navigate_to_marker.pids['throttle_pid']
-    yaw_threshold = 5.0  # The robot will start moving forward when the target is this many degrees from the center
 
     markers, ids = find_arucos(frame)
     if markers and ids is not None:
@@ -138,8 +139,8 @@ def follow_line(frame):
     for i, c in enumerate(contours):
         pt1, pt2, angle, cx, cy = get_contour_line(c)
         cv2.line(frame, pt1, pt2, (0, 255, 0), 2)
-        cv2.putText(frame, str(i), (int(cx), int(cy)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-        print(f"Contour {i}: Angle: {angle:.2f} degrees") # Optionally print angles for debugging
+        # cv2.putText(frame, str(i), (int(cx), int(cy)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+        # print(f"Contour {i}: Angle: {angle:.2f} degrees") # Optionally print angles for debugging
 
     throttle, yaw = 0, 0
     if contours:
@@ -152,7 +153,7 @@ def follow_line(frame):
             # Compute ref_x based on angle: 0° -> center, +max_angle -> left, -max_angle -> right.
             ref_x = (frame_width / 2) + (angle / max_angle) * (frame_width / 2)
             # Draw ref_x on the frame for debugging
-            cv2.line(frame, (int(ref_x), 0), (int(ref_x), frame_height), (0, 0, 255), 2)
+            # cv2.line(frame, (int(ref_x), 0), (int(ref_x), frame_height), (0, 0, 255), 2)
             # Compute the error between the centroid and our adjusted reference.
             x_err = abs(cx - ref_x)
             # Return a tuple for sorting: first sort by lowest centroid (i.e. largest cy) then by x error.
@@ -187,7 +188,36 @@ def follow_line(frame):
     return throttle, yaw  # Comment this line to disable output
     return 0, 0
 
-# Function to display the frame 
+def sequence():
+    # Static variables
+    if not hasattr(sequence, "start_time"):
+        sequence.start_time = time.time()
+    
+    # Define the sequence of actions
+    actions = [ # v, w, t
+        (0.15, 0, 2), # Move 30cm forward
+        (0, math.radians(30), 3), # 90° turn
+        (0.15, 0, 2), # Move 30cm forward
+    ]
+
+    # Get the elapsed time
+    elapsed_time = time.time() - sequence.start_time
+
+    action = None
+    ac_time = 0
+    for i, act in enumerate(actions):
+        v, w, t = act
+        ac_time += t
+        if elapsed_time < ac_time:
+            action = act
+            break
+    
+    done = action is None
+    throttle, yaw, _ = action if not done else (0, 0, True)
+    if done:
+        del sequence.start_time
+    return throttle, yaw, done
+
 def show_frame(frame, name="Frame", max_size=400):
     h, w = frame.shape[:2]
     if h > w:
@@ -230,10 +260,23 @@ try:
         elif rising_edge('3', 'B'):
             nav_mode = 3
             print("Control mode: Navigate to marker")
+        elif rising_edge('4'):
+            nav_mode = 4
+            print("Preprogrammed sequence")
+        elif rising_edge('5'):
+            nav_mode = 5
+            print("Navigate intersection")
         if nav_mode == 2:
             throttle, yaw = follow_line(frame)
         elif nav_mode == 3:
             throttle, yaw = navigate_to_marker(frame)
+        elif nav_mode == 4:
+            throttle, yaw, done = sequence()
+            if done:
+                print("Sequence completed")
+                nav_mode = 1
+        elif nav_mode == 5:
+            throttle, yaw = vn.navigate_intersection(frame)
         
         # Always allow manual control
         thr, yw = manual_control()
@@ -243,8 +286,7 @@ try:
         # Send control commands to the robot
         puzzlebot.send_vel(throttle, yaw, wait_for_completion=False)
         
-        if frame is not None:
-            show_frame(frame, "Puzzlebot Stream", 400)
+        show_frame(frame, "Puzzlebot Stream", 400)
 except KeyboardInterrupt:
     print("Exiting...")
 finally:

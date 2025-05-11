@@ -1,1 +1,3 @@
-- 
+- move algorithms to visual_navigation.py
+- fix direction detection issue
+- allow passing a dedicated drawing frame
