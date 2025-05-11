@@ -11,18 +11,18 @@ import pose_estimation as pe
 from simple_pid import PID
 
 # Connection
-puzzlebot = PuzzlebotHttpClient("http://192.168.137.139:5000", safe_mode=True)
-# puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
+# puzzlebot = PuzzlebotHttpClient("http://192.168.137.139:5000", safe_mode=True)
+puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
 
 # Maximum values for throttle and yaw
-max_yaw = math.radians(60)
+max_yaw = math.radians(90)
 max_thr = 0.75
 
 # Navigation algorithms
 def manual_control():
     from input_man import get_axis
     slow_thr = 0.2
-    slow_yaw = math.radians(30)
+    slow_yaw = math.radians(45)
 
     # Get keyboard input
     keyvert = 1 if is_pressed('w') else -1 if is_pressed('s') else 0
@@ -63,8 +63,10 @@ def navigate_to_marker(frame):
     yaw_threshold = 5.0  # The robot will start moving forward when the target is this many degrees from the center
 
     markers, ids = find_arucos(frame)
-    if markers:
-        marker = markers[0]
+    if markers and ids is not None:
+        # Find the marker with the lowest ID
+        min_id_index = np.argmin(ids)
+        marker = markers[min_id_index]
         # Remove extra nesting if necessary; otherwise, pass marker directly.
         _, _, _, cam_dist, _, cam_yaw = estimate_marker_pose( marker_corners=marker, frame=frame, ref_size=0.063300535, fov_x=math.radians(60) )
         print(f"Dist: {cam_dist:.2f}, Yaw: {math.degrees(cam_yaw):.2f}")
@@ -103,12 +105,12 @@ def follow_line(frame):
         _, mask = cv2.threshold(gray, dark_thres, 255, cv2.THRESH_BINARY_INV)
         
         # Shrink the vertical field of view to the lower part of the frame.
-        v_fov = 0.3
+        v_fov = 0.4
         mask[:int(frame_height * (1-v_fov)), :] = 0
         
         # Erode and dilate to remove noise and fill gaps.
         mask = cv2.erode(mask, kernel=np.ones((3, 3), np.uint8), iterations=3)
-        mask = cv2.dilate(mask, kernel=np.ones((5, 5), np.uint8), iterations=5)
+        mask = cv2.dilate(mask, kernel=np.ones((3, 3), np.uint8), iterations=3)
 
         # Find contours in the modified mask, filtering out noise.
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -182,7 +184,7 @@ def follow_line(frame):
         # Write "Searching for line" on the frame
         cv2.putText(frame, "Searching for line", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
     
-    return throttle, yaw
+    return throttle, yaw  # Comment this line to disable output
     return 0, 0
 
 # Function to display the frame 
@@ -207,6 +209,11 @@ try:
         # Inputs and outputs
         frame = puzzlebot.get_frame()
         throttle, yaw = 0, 0
+
+        # Optional screenshot
+        if rising_edge('p'):
+            cv2.imwrite("screenshot.png", frame)
+            print("Screenshot taken")
 
         # Safe mode selection
         if rising_edge('z', 'Y'):

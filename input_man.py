@@ -14,15 +14,13 @@ from gamepad import get_axis
 
 
 def _is_gamepad(name: str) -> bool:
-    """Return True if the name refers to a gamepad button (all uppercase)."""
+    """ Return True if the name refers to a gamepad button (all uppercase). """
     return isinstance(name, str) and name.isupper()
 
 
 def is_pressed(*names) -> bool:
-    """
-    Return True if any of the given keys or buttons are currently held down.
-    Usage: is_pressed('a', 'A') returns True if 'a' key or 'A' button is down.
-    """
+    """ Return True if any of the given keys or buttons are currently held down.
+    Usage: is_pressed('a', 'A') returns True if 'a' key or 'A' button is down. """
     for name in names:
         if _is_gamepad(name):
             if gamepad.is_pressed(name):
@@ -34,9 +32,7 @@ def is_pressed(*names) -> bool:
 
 
 def rising_edge(*names) -> bool:
-    """
-    Return True once if any of the given keys or buttons went down since last check.
-    """
+    """ Return True once if any of the given keys or buttons went down since last check. """
     for name in names:
         if _is_gamepad(name):
             if gamepad.rising_edge(name):
@@ -48,9 +44,7 @@ def rising_edge(*names) -> bool:
 
 
 def falling_edge(*names) -> bool:
-    """
-    Return True once if any of the given keys or buttons went up since last check.
-    """
+    """ Return True once if any of the given keys or buttons went up since last check. """
     for name in names:
         if _is_gamepad(name):
             if gamepad.falling_edge(name):
@@ -62,9 +56,7 @@ def falling_edge(*names) -> bool:
 
 
 def is_toggled(name: str) -> bool:
-    """
-    Flip-flop state for a single key or button. Returns current toggle state.
-    """
+    """ Flip-flop state for a single key or button. Returns current toggle state. """
     if _is_gamepad(name):
         return gamepad.is_toggled(name)
     return keybrd.is_toggled(name)
