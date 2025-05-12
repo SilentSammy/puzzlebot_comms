@@ -19,7 +19,6 @@ puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
 max_yaw = math.radians(90)
 max_thr = 0.75
 
-# Navigation algorithms
 def manual_control():
     from input_man import get_axis
     slow_thr = 0.2
@@ -50,36 +49,6 @@ def manual_control():
     # print(f"Throttle: {thr:.2f}, Yaw: {yaw:.2f}")
     return thr, yaw
 
-def sequence():
-    # Static variables
-    if not hasattr(sequence, "start_time"):
-        sequence.start_time = time.time()
-    
-    # Define the sequence of actions
-    actions = [ # v, w, t
-        (0.15, 0, 2), # Move 30cm forward
-        (0, -math.radians(30), 3), # 90° turn
-        (0.15, 0, 2), # Move 30cm forward
-    ]
-
-    # Get the elapsed time
-    elapsed_time = time.time() - sequence.start_time
-
-    action = None
-    ac_time = 0
-    for i, act in enumerate(actions):
-        v, w, t = act
-        ac_time += t
-        if elapsed_time < ac_time:
-            action = act
-            break
-    
-    done = action is None
-    throttle, yaw, _ = action if not done else (0, 0, True)
-    if done:
-        del sequence.start_time
-    return throttle, yaw, done
-
 def show_frame(frame, name="Frame", max_size=400):
     h, w = frame.shape[:2]
     if h > w:
@@ -95,8 +64,13 @@ def show_frame(frame, name="Frame", max_size=400):
     if cv2.waitKey(1) & 0xFF == 27:
         raise KeyboardInterrupt
 
-try:
+def reset_nav_mode():
+    global nav_mode
     nav_mode = 1
+    print("Control mode: Manual")
+    
+nav_mode = 1
+try:
     while True:
         # Inputs and outputs
         frame = puzzlebot.get_frame()
@@ -119,29 +93,26 @@ try:
             print("Control mode: Manual")
         elif rising_edge('2', 'A'):
             nav_mode = 2
-            print("Control mode: Follow line")
+            print("Control mode: Navigate track")
         elif rising_edge('3', 'B'):
             nav_mode = 3
             print("Control mode: Navigate to marker")
         elif rising_edge('4'):
             nav_mode = 4
-            print("Control mode: Preprogrammed sequence")
+            print("Control mode: Follow line")
         elif rising_edge('5'):
             nav_mode = 5
-            print("Control mode: Navigate track")
+            print("Control mode: Preprogrammed sequence")
         
         # Control
         if nav_mode == 2:
-            throttle, yaw = vn.follow_line(frame, drawing_frame)
+            throttle, yaw = vn.navigate_track(frame, drawing_frame)
         elif nav_mode == 3:
             throttle, yaw = vn.navigate_to_marker(frame, drawing_frame)
         elif nav_mode == 4:
-            throttle, yaw, done = sequence()
-            if done:
-                print("Sequence completed")
-                nav_mode = 1
+            throttle, yaw = vn.follow_line(frame, drawing_frame)
         elif nav_mode == 5:
-            throttle, yaw = vn.navigate_track(frame, drawing_frame)
+            throttle, yaw = vn.sequence(when_done=reset_nav_mode)
         
         # Always allow manual control
         thr, yw = manual_control()

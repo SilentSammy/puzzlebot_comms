@@ -1,6 +1,8 @@
 + move algorithms to visual_navigation.py
 + fix direction detection issue
 + allow passing a dedicated drawing frame
-- navigate_track
++ navigate_track
+- allow passing a decision function to navigate_track
 - smarter intersection alignment algorithm
-- allow binary polling of controller axes
+- allow boolean polling of controller axes
+- allow passing throttle authority in follow_line

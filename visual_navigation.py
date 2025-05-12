@@ -288,8 +288,11 @@ def identify_intersection(frame, drawing_frame=None):
     # Identify the back, left, right, and front lines
     proximity_sorted = [hor for hor in horizontals if hor[1][1] / frame.shape[0] >= 0.3]
     proximity_sorted = iter(sorted(proximity_sorted, key=lambda x: x[1][1], reverse=True))
-    left = next(iter(sorted(verticals, key=lambda x: x[1][0], reverse=True)), None)
-    right = next(iter(sorted(verticals, key=lambda x: x[1][0])), None)
+    mid_x = frame.shape[1] / 2  # Half the frame width
+    left_verticals = [dl for dl in verticals if dl[1][0] < mid_x]
+    left = next(iter(sorted(left_verticals, key=lambda x: x[1][0], reverse=True)), None)
+    right_verticals = [dl for dl in verticals if dl[1][0] > mid_x and dl != left]
+    right = next(iter(sorted(right_verticals, key=lambda x: x[1][0])), None)
     back = next(proximity_sorted, None)
     front = next(proximity_sorted, None)
     proximity_sorted = iter(sorted(dotted_lines, key=lambda x: x[1][1], reverse=True))
@@ -342,18 +345,90 @@ def stop_at_intersection(frame, drawing_frame=None, intersection=None):
     return throttle, yaw
 
 def navigate_track(frame, drawing_frame=None):
-    throttle, yaw = 0, 0
+    # Define sequences of actions (v, w, t)
+    backward = [ (0, math.radians(30), 6) ]
+    turn_left = [
+        (0.15, 0, 2), # Move 30cm forward
+        (0, math.radians(30), 3), # left 90° turn
+        (0.15, 0, 2), # Move 30cm forward
+    ]
+    turn_right = [
+        (0.15, 0, 2), # Move 30cm forward
+        (0, -math.radians(30), 3), # right 90° turn
+        (0.15, 0, 2), # Move 30cm forward
+    ]
+    forward = [ (0.15, 0, 4) ]
+    actions = [backward, turn_left, turn_right, forward]
+
+    # Static variables
+    navigate_track.tmr = navigate_track.tmr if hasattr(navigate_track, "tmr") else 0
+    navigate_track.action_index = navigate_track.action_index if hasattr(navigate_track, "action_index") else -1
+
+    # If an action is in progress execute it.
+    if navigate_track.action_index != -1:
+        def reset_action():
+            navigate_track.action_index = -1
+        thr, yaw = sequence(actions=actions[navigate_track.action_index], when_done=reset_action)
+        return thr, yaw
 
     # Attempt to identify an intersection.
     intersection = identify_intersection(frame, drawing_frame=drawing_frame)
 
-    # If at least 3 directions are non-null, we can assume we are at an intersection.
-    if intersection and len([d for d in intersection if d is not None]) >= 3:
-        thr, yw = stop_at_intersection(frame=frame, drawing_frame=drawing_frame, intersection=intersection) # Passing the detected intersection to avoid double processing.
+    # Are we close enough to the intersection?
+    inter_hor = intersection[0] or intersection[3] if intersection else None
+    inter_hor_y = inter_hor[1][1] / frame.shape[0] if inter_hor else 0
+    close_enough = inter_hor_y >= (1 - 0.4)
+
+    if close_enough: # If the robot is close to the intersection, stop and choose a random direction.
+        thr, yaw = stop_at_intersection(frame=frame, drawing_frame=drawing_frame, intersection=intersection) # Passing the detected intersection to avoid double processing.
+        
+        # Wait for the robot to stabilize
+        if not (abs(thr) < 0.02 and abs(thr) < 0.02):
+            navigate_track.tmr = time.time() # Reset the timer
+        
+        # If the robot has been stable for 2 seconds choose a random index from the available directions
+        if time.time() - navigate_track.tmr > 1:
+            avail_idxs = [i for i, d in enumerate(intersection) if d is not None and i != 0]
+            navigate_track.action_index = np.random.choice(avail_idxs)
+            dir_labels = ["back", "left", "right", "front"]
+            print(f"Available directions: {[dir_labels[i] for i in avail_idxs]}")
+            print(f"Going: {dir_labels[navigate_track.action_index]}")
+
     else: # No intersection detected, so we should follow the line.
-        thr, yw = follow_line(frame, drawing_frame=drawing_frame)
-    throttle = thr
-    yaw = yw
+        thr, yaw = follow_line(frame, drawing_frame=drawing_frame)
+        navigate_track.tmr = time.time() # Reset the timer
+    return thr, yaw
+
+def sequence(actions=None, when_done=None):
+    # Static variables
+    if not hasattr(sequence, "start_time"):
+        sequence.start_time = time.time()
+    
+    # Define the sequence of actions or use default
+    actions = actions or [ # v, w, t
+        (0.15, 0, 2), # Move 30cm forward
+        (0, -math.radians(30), 3), # 90° turn
+        (0.15, 0, 2), # Move 30cm forward
+    ]
+
+    # Get the elapsed time
+    elapsed_time = time.time() - sequence.start_time
+
+    action = None
+    ac_time = 0
+    for i, act in enumerate(actions):
+        ac_time += act[2]
+        if elapsed_time < ac_time:
+            action = act
+            break
+    
+    throttle, yaw = 0, 0
+    if action is None: # done
+        del sequence.start_time
+        if when_done:
+            when_done()
+    else:
+        throttle, yaw, _ = action
     return throttle, yaw
 
 if __name__ == "__main__":
@@ -361,7 +436,7 @@ if __name__ == "__main__":
     frame = cv2.imread("intersection4.png")
 
     # For visualization, draw a line connecting the endpoints for each detected dotted line group.
-    stop_at_intersection(frame)
+    stop_at_intersection(frame, frame)
 
     # Display the result.
     cv2.imshow("Display", frame)
