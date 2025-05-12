@@ -44,26 +44,29 @@ You can test the system in two ways:
 - Run `rc_control.py`, setting the connection URL (at the start of the [`rc_control.py`](./rc_control.py) script) to the Jetson’s IP (e.g., `http://192.168.137.139:5000`).
 
 ## RC Control Instructions
+[`rc_control.py`](./rc_control.py) works by initializing a `PuzzlebotClient` connection to either a CoppeliaSim simulation, or the real-life Puzzlebot. It allows keyboard and controller inputs. To connect an Xbox controller, simply pair it to your PC, and run the program. This has only been tested with an Xbox controller, but may work with others.
 
-- **Navigation Mode Selection via Radio Buttons:**  
-  The keys `1`, `2`, and `3` are configured as radio buttons:
-  - Pressing **1** disables any auto-navigation algorithm (allowing pure manual control).
-  - Pressing **2** enables auto-navigation using ArUco marker detection.
-  - Pressing **3** enables auto-navigation using line following.
+- **Navigation Mode:**
+  - Pressing the **1** key or **X** button disables any auto-navigation algorithm (allowing pure manual control).
+  - Pressing the **2** key or **A** button enables autonomous track navigation.
+  - Pressing the **3** key or **B** button enables auto-navigation using ArUco marker detection.
   
 - **Safe Mode Toggle:**  
-  Additionally, you can toggle safe mode by (for example) pressing a designated key (such as `Z` in the code), which sets the client into safe mode. When enabled, velocity commands use the `/cmd_vel_safe` endpoint where acceleration is smoothly ramped to safe levels.
+  You can toggle safe mode by pressing the **Z** key or **Y** button. When safe mode is active, all velocity commands are sent to the `/cmd_vel_safe` endpoint, ensuring smooth acceleration to prevent overcurrent issues and potential brown-outs.
 
 - **Manual Control:**  
   Use the keyboard keys:
   - `W` to move forward
   - `S` to move backward
   - `A` to turn left
-  - `D` to turn right  
+  - `D` to turn right
+  - `C` for boost
+  
   *Tip:* Ensure the OpenCV window is unfocused (e.g: by clicking on the taskbar) to prevent the video from lagging.
 
-- **Auto Mode:**  
-  When an auto-navigation key is active (either `2` for marker tracking or `3` for line following), the robot automatically drives toward the target. When no auto algorithm is active (pressing `1`), only manual control is applied.
+  Use the controller:
+  - `Left joystick` for translational and rotational control
+  - `Triggers` for boost
 
 ## Using the Python Client
 

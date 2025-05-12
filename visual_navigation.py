@@ -433,7 +433,7 @@ def sequence(actions=None, when_done=None):
 
 if __name__ == "__main__":
     # Load intesection.png
-    frame = cv2.imread("intersection4.png")
+    frame = cv2.imread("./resources/screenshots/intersection4.png")
 
     # For visualization, draw a line connecting the endpoints for each detected dotted line group.
     stop_at_intersection(frame, frame)
