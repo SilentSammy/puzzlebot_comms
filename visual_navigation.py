@@ -310,7 +310,7 @@ def identify_intersection(frame, drawing_frame=None):
         cv2.fillPoly(drawing_frame, [np.array([center, pt1, pt2], np.int32)], (0, 255, 0)) # Draw the triangle as a filled polygon
     return directions
 
-def stop_at_intersection(frame, drawing_frame=None):
+def stop_at_intersection(frame, drawing_frame=None, intersection=None):
     # Static variables
     max_yaw = math.radians(30)
     max_thr = 0.2
@@ -324,7 +324,10 @@ def stop_at_intersection(frame, drawing_frame=None):
     v_pid = stop_at_intersection.pids["v_pid"]
     throttle, yaw = 0, 0
 
-    back, left, right, front = identify_intersection(frame, drawing_frame=drawing_frame)
+    if intersection:
+        back, left, right, front = intersection
+    else:
+        back, left, right, front = identify_intersection(frame, drawing_frame=drawing_frame)
 
     # Align the robot with the intersection
     if back or front:
@@ -340,7 +343,15 @@ def stop_at_intersection(frame, drawing_frame=None):
 
 def navigate_track(frame, drawing_frame=None):
     throttle, yaw = 0, 0
-    thr, yw = follow_line(frame, drawing_frame=drawing_frame)
+
+    # Attempt to identify an intersection.
+    intersection = identify_intersection(frame, drawing_frame=drawing_frame)
+
+    # If at least 3 directions are non-null, we can assume we are at an intersection.
+    if intersection and len([d for d in intersection if d is not None]) >= 3:
+        thr, yw = stop_at_intersection(frame=frame, drawing_frame=drawing_frame, intersection=intersection) # Passing the detected intersection to avoid double processing.
+    else: # No intersection detected, so we should follow the line.
+        thr, yw = follow_line(frame, drawing_frame=drawing_frame)
     throttle = thr
     yaw = yw
     return throttle, yaw

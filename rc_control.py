@@ -128,7 +128,7 @@ try:
             print("Control mode: Preprogrammed sequence")
         elif rising_edge('5'):
             nav_mode = 5
-            print("Control mode: Navigate intersection")
+            print("Control mode: Navigate track")
         
         # Control
         if nav_mode == 2:
@@ -141,7 +141,7 @@ try:
                 print("Sequence completed")
                 nav_mode = 1
         elif nav_mode == 5:
-            throttle, yaw = vn.stop_at_intersection(frame, drawing_frame)
+            throttle, yaw = vn.navigate_track(frame, drawing_frame)
         
         # Always allow manual control
         thr, yw = manual_control()
