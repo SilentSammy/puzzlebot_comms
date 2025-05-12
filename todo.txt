@@ -1,3 +1,4 @@
-- move algorithms to visual_navigation.py
-- fix direction detection issue
-- allow passing a dedicated drawing frame
++ move algorithms to visual_navigation.py
++ fix direction detection issue
++ allow passing a dedicated drawing frame
+- allow binary polling of controller axes

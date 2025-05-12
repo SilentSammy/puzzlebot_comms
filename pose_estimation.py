@@ -430,7 +430,8 @@ def draw_ellipse(frame, ellipse):
     cv2.line(frame, pt3, pt4, (0, 0, 255), 2)
 
 # ARUCO MARKERS
-def find_arucos(frame):
+def find_arucos(frame, drawing_frame = None):
+    drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
     # Detect markers
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
@@ -443,7 +444,7 @@ def find_arucos(frame):
     # print(f"Detected {len(corners)} markers")
 
     if ids is not None:
-        cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+        cv2.aruco.drawDetectedMarkers(drawing_frame, corners, ids)
     
     return corners, ids
 
