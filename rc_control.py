@@ -12,7 +12,7 @@ from simple_pid import PID
 import visual_navigation as vn
 
 # Connection
-# puzzlebot = PuzzlebotHttpClient("http://192.168.137.139:5000", safe_mode=True)
+# puzzlebot = PuzzlebotHttpClient("http://192.168.137.10:5000", safe_mode=True)
 puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
 
 # Maximum values for throttle and yaw
@@ -68,19 +68,69 @@ def reset_nav_mode():
     global nav_mode
     nav_mode = 1
     print("Control mode: Manual")
+
+def choose_direction(intersection, drawing_frame=None, time_limit=3):
+    if not hasattr(choose_direction, 'tmr'):
+        choose_direction.tmr = time.time()
+
+    dir_labels = ["back", "left", "right", "front"]
+    chosen_idx = -1
+    avail_idxs = [i for i, d in enumerate(intersection) if d is not None]
+    keys = ['k', 'j', 'l', 'i']
+    if drawing_frame is not None:
+        for i, d in enumerate(intersection):
+            if d is not None:
+                cv2.putText(drawing_frame, keys[i].upper(), d[1], cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 5)
+
+    for i, key in enumerate(keys):
+        if is_pressed(key):
+            if i in avail_idxs:
+                chosen_idx = i
+                break
     
+    # If more than 3 seconds have passed since the last choice
+    print(f"Time remaining: {time_limit - (time.time() - choose_direction.tmr):.2f} seconds")
+    if time.time() - choose_direction.tmr > time_limit or time_limit < 0:
+        chosen_idx = np.random.choice(avail_idxs)
+    
+    if chosen_idx != -1:
+        print(f"Chosen direction: {dir_labels[chosen_idx]}")
+        del choose_direction.tmr
+    return chosen_idx
+
+def screenshot(frame):
+    import os
+
+    # Static variables
+    screenshot.dir_path = screenshot.dir_path if hasattr(screenshot, 'dir_path') else "./resources/screenshots/"+time.strftime("%Y-%m-%d_%H-%M-%S")
+    screenshot.count = screenshot.count if hasattr(screenshot, 'count') else 0
+
+    # Make the directory if it doesn't exist
+    os.makedirs(screenshot.dir_path, exist_ok=True)
+
+    # Save the image
+    filename = os.path.join(screenshot.dir_path, f"screenshot_{screenshot.count}.png")
+    cv2.imwrite(filename, frame)
+    print(f"Screenshot saved: {filename}")
+
+    # Increment the count
+    screenshot.count += 1
+
 nav_mode = 1
 try:
     while True:
         # Inputs and outputs
         frame = puzzlebot.get_frame()
+        # frame = vn.undistort_fisheye(frame)
         drawing_frame = frame.copy()
         throttle, yaw = 0, 0
 
         # Optional screenshot
         if rising_edge('p'):
-            cv2.imwrite("screenshot.png", frame)
-            print("Screenshot taken")
+            screenshot(frame)
+        # Optional recording (spamming screenshots)
+        if is_toggled('r'):
+            screenshot(frame)
 
         # Safe mode selection
         if rising_edge('z', 'Y'):
@@ -96,7 +146,7 @@ try:
             print("Control mode: Navigate track")
         elif rising_edge('3', 'B'):
             nav_mode = 3
-            print("Control mode: Navigate to marker")
+            print("Control mode: Waypoint navigation")
         elif rising_edge('4'):
             nav_mode = 4
             print("Control mode: Follow line")
@@ -106,9 +156,9 @@ try:
         
         # Control
         if nav_mode == 2:
-            throttle, yaw = vn.navigate_track(frame, drawing_frame)
+            throttle, yaw = vn.navigate_track(frame, drawing_frame, lambda i: choose_direction(i, drawing_frame))
         elif nav_mode == 3:
-            throttle, yaw = vn.navigate_to_marker(frame, drawing_frame)
+            throttle, yaw = vn.waypoint_navigation(frame, drawing_frame)
         elif nav_mode == 4:
             throttle, yaw = vn.follow_line(frame, drawing_frame)
         elif nav_mode == 5:
@@ -119,9 +169,14 @@ try:
         throttle += thr
         yaw += yw
 
+        # Disable output for debugging
+        # throttle = 0
+        # yaw = 0
+
         # Send control commands to the robot
         puzzlebot.send_vel(throttle, yaw, wait_for_completion=False)
         
+        # print(vn.identify_stoplight(frame, drawing_frame))
         show_frame(drawing_frame, "Puzzlebot Stream", 400)
 except KeyboardInterrupt:
     print("Exiting...")

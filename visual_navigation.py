@@ -4,6 +4,8 @@ import math
 import cv2
 import time
 import pose_estimation as pe
+import image_test as it
+import keybrd
 
 def navigate_to_marker(frame, drawing_frame=None):
     drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
@@ -57,7 +59,7 @@ def follow_line(frame, drawing_frame=None):
 
     def get_line_candidates():
         # Convert to binary mask, only keeping pixels darker than dark_thres.
-        dark_thres = 100
+        dark_thres = 120
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         _, mask = cv2.threshold(gray, dark_thres, 255, cv2.THRESH_BINARY_INV)
         
@@ -66,7 +68,7 @@ def follow_line(frame, drawing_frame=None):
         mask[:int(frame_height * (1-v_fov)), :] = 0
         
         # Erode and dilate to remove noise and fill gaps.
-        mask = cv2.erode(mask, kernel=np.ones((3, 3), np.uint8), iterations=3)
+        mask = cv2.erode(mask, kernel=np.ones((3, 3), np.uint8), iterations=5)
         mask = cv2.dilate(mask, kernel=np.ones((3, 3), np.uint8), iterations=3)
 
         # Find contours in the modified mask, filtering out noise.
@@ -149,13 +151,15 @@ def identify_intersection(frame, drawing_frame=None):
     def get_dotted_lines(frame, drawing_frame=None):
         def find_dots(frame, drawing_frame=None):
             drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
-            # Load the image and convert to grayscale
-            dark_thres = 100
+            # Adaptive thresholding to create a binary mask
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            _, mask = cv2.threshold(gray, dark_thres, 255, cv2.THRESH_BINARY_INV)
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            mask = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                        cv2.THRESH_BINARY_INV, 11, 5)
 
-            # Find quadrilateral contours in the mask
+            # Find quadrilateral contours in the mask with sufficient area
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours = [c for c in contours if cv2.contourArea(c) > 20]
             dots = []
 
             # Maximum allowed aspect ratio (long side divided by short side)
@@ -166,18 +170,21 @@ def identify_intersection(frame, drawing_frame=None):
                 epsilon = 0.03 * cv2.arcLength(cnt, True)
                 approx = cv2.approxPolyDP(cnt, epsilon, True)
 
-                # Check if the approximated contour has 4 points (quadrilateral)
-                if len(approx) == 4:
+                # Check if the approximated contour has 4 points (quadrilateral) and is convex.
+                if len(approx) == 4 and cv2.isContourConvex(approx):
                     x, y, w, h = cv2.boundingRect(approx)
                     # Filter out quadrilaterals that are too elongated
                     if min(w, h) == 0 or max(w, h) / min(w, h) > max_aspect_ratio:
                         continue
                     center = (x + w // 2, y + h // 2)
                     dots.append(center)
-                    # cv2.circle(drawing_frame, center, 5, (0, 0, 255), -1) # Optionally, Draw the detected dot on the image
+                    # Optionally, draw the detected dot on the image
+                    cv2.circle(drawing_frame, center, 5, (0, 0, 255), -1)
+                    cv2.polylines(drawing_frame, [approx], True, (0, 255, 0), 2)
+
             return dots
 
-        def cluster_collinear_points(dots, min_points=4, threshold=3, outlier_factor=2.0):
+        def cluster_collinear_points(dots, min_points=5, threshold=5, outlier_factor=10.0):
             """ 
             Groups dots that are roughly collinear.
             - threshold: maximum perpendicular distance (in pixels) allowed from the candidate line.
@@ -273,6 +280,11 @@ def identify_intersection(frame, drawing_frame=None):
         dots = find_dots(frame, drawing_frame=drawing_frame)
         groups = cluster_collinear_points(dots)
         dotted_lines = [find_line_endpoints(group) for group in groups]
+
+        # Optionally draw the lines on the image
+        for line in dotted_lines:
+            cv2.line(drawing_frame, line[0], line[1], (255, 0, 0), 2)
+
         return dotted_lines
 
     dotted_lines = get_dotted_lines(frame, drawing_frame=drawing_frame)
@@ -344,7 +356,14 @@ def stop_at_intersection(frame, drawing_frame=None, intersection=None):
 
     return throttle, yaw
 
-def navigate_track(frame, drawing_frame=None):
+def navigate_track(frame, drawing_frame=None, decision_func=None):
+    def random_decision(intersection):
+        avail_idxs = [i for i, d in enumerate(intersection) if d is not None and i != 0]
+        chosen_idx = np.random.choice(avail_idxs)
+        dir_labels = ["back", "left", "right", "front"]
+        print(f"Available directions: {[dir_labels[i] for i in avail_idxs]}; Going: {dir_labels[chosen_idx]}")
+        return chosen_idx
+
     # Define sequences of actions (v, w, t)
     backward = [ (0, math.radians(30), 6) ]
     turn_left = [
@@ -359,10 +378,12 @@ def navigate_track(frame, drawing_frame=None):
     ]
     forward = [ (0.15, 0, 4) ]
     actions = [backward, turn_left, turn_right, forward]
+    decision_func = decision_func or random_decision
 
     # Static variables
     navigate_track.tmr = navigate_track.tmr if hasattr(navigate_track, "tmr") else 0
     navigate_track.action_index = navigate_track.action_index if hasattr(navigate_track, "action_index") else -1
+    navigate_track.stoplight = navigate_track.stoplight if hasattr(navigate_track, "stoplight") else 2
 
     # If an action is in progress execute it.
     if navigate_track.action_index != -1:
@@ -371,8 +392,15 @@ def navigate_track(frame, drawing_frame=None):
         thr, yaw = sequence(actions=actions[navigate_track.action_index], when_done=reset_action)
         return thr, yaw
 
+    # Determine the speed factor based on the stoplight.
+    stoplight = identify_stoplight(frame, drawing_frame=drawing_frame)
+    if stoplight is not None and stoplight != 1: # If red or green, remember it
+        navigate_track.stoplight = stoplight
+    speed_factor = (stoplight or navigate_track.stoplight) * 0.5
+
     # Attempt to identify an intersection.
-    intersection = identify_intersection(frame, drawing_frame=drawing_frame)
+    # intersection = identify_intersection(frame, drawing_frame=drawing_frame)
+    intersection = [None, None, None, None]
 
     # Are we close enough to the intersection?
     inter_hor = intersection[0] or intersection[3] if intersection else None
@@ -382,24 +410,130 @@ def navigate_track(frame, drawing_frame=None):
     if close_enough: # If the robot is close to the intersection, stop and choose a random direction.
         thr, yaw = stop_at_intersection(frame=frame, drawing_frame=drawing_frame, intersection=intersection) # Passing the detected intersection to avoid double processing.
         
-        # Wait for the robot to stabilize
-        if not (abs(thr) < 0.02 and abs(thr) < 0.02):
-            navigate_track.tmr = time.time() # Reset the timer
+        # Wait for the robot to stabilize and for the stoplight to be green.
+        if not (abs(thr) < 0.02 and abs(thr) < 0.02) or speed_factor != 1:
+            navigate_track.tmr = time.time() # Reset the timer (keep waiting)
         
         # If the robot has been stable for 2 seconds choose a random index from the available directions
         if time.time() - navigate_track.tmr > 1:
-            avail_idxs = [i for i, d in enumerate(intersection) if d is not None and i != 0]
-            navigate_track.action_index = np.random.choice(avail_idxs)
-            dir_labels = ["back", "left", "right", "front"]
-            print(f"Available directions: {[dir_labels[i] for i in avail_idxs]}")
-            print(f"Going: {dir_labels[navigate_track.action_index]}")
+            navigate_track.action_index = decision_func(intersection) # Poll the decision function
 
     else: # No intersection detected, so we should follow the line.
         thr, yaw = follow_line(frame, drawing_frame=drawing_frame)
         navigate_track.tmr = time.time() # Reset the timer
+        thr *= speed_factor
     return thr, yaw
 
-def sequence(actions=None, when_done=None):
+def waypoint_navigation(frame, drawing_frame=None):
+    waypoint_navigation.stoplight = waypoint_navigation.stoplight if hasattr(waypoint_navigation, "stoplight") else 2
+    waypoint_navigation.last_time = waypoint_navigation.last_time if hasattr(waypoint_navigation, "last_time") else time.time()
+    waypoint_navigation.elapsed_time = waypoint_navigation.elapsed_time if hasattr(waypoint_navigation, "elapsed_time") else 0
+    
+    # Determine the speed factor based on the stoplight.
+    stoplight = identify_stoplight(frame, drawing_frame=drawing_frame)
+    if stoplight is not None and stoplight != 1: # If red or green, remember it
+        waypoint_navigation.stoplight = stoplight
+    speed_factor = (stoplight or waypoint_navigation.stoplight) * 0.5
+    s = speed_factor
+
+    elapsed = time.time() - waypoint_navigation.last_time
+    waypoint_navigation.elapsed_time += elapsed * s
+    waypoint_navigation.last_time = time.time()
+
+
+    # Define the sequence of actions (v, w, t)
+    actions = [
+        (0.2, 0, 2), # Move 50cm forward
+        (0, -math.radians(90), 2), # 180° turn
+    ]
+    actions = [(v*s, w*s, t) for v, w, t in actions] # Scale the actions by s
+    total_time = sum([t for _, _, t in actions])
+    waypoint_navigation.elapsed_time = waypoint_navigation.elapsed_time % total_time
+    print(waypoint_navigation.elapsed_time)
+    throttle, yaw = sequence(actions=actions, elapsed_time=waypoint_navigation.elapsed_time)
+
+    return throttle, yaw
+
+def identify_stoplight(frame, drawing_frame = None):
+    def find_color_ellipses(mask):
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        ellipses = []
+        for cnt in contours:
+            # 1. Filter out contours with fewer than n points.
+            if len(cnt) < 5:
+                continue
+            # 2. Fit an ellipse.
+            ellipse = cv2.fitEllipse(cnt)
+            (center_x, center_y), (axis1, axis2), angle = ellipse
+            # 3. Skip invalid ellipses.
+            if axis1 <= 0 or axis2 <= 0:
+                continue
+            # 4. Create a filled mask for the ellipse.
+            ellipse_mask = np.zeros(mask.shape, dtype=np.uint8)
+            cv2.ellipse(ellipse_mask, ellipse, 255, thickness=-1)
+            # 5. Count pixels in the ellipse that also appear in the original mask.
+            filled = cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=ellipse_mask))
+            # 6. Compute the theoretical ellipse area.
+            ellipse_area = math.pi * (axis1 / 2) * (axis2 / 2)
+            fill_ratio = filled / ellipse_area if ellipse_area > 0 else 0
+            # 7. Accept only if fill ratio is >= 0.9.
+            if fill_ratio < 0.8:
+                continue
+            # 8. Filter out ellipses where the minor axis is less than 0.5 of the major axis.
+            if min(axis1, axis2) < 0.5 * max(axis1, axis2):
+                continue
+            ellipses.append(ellipse)
+        return ellipses
+
+    # Define hsv ranges
+    red = ((0, 150, 100), (10, 255, 255))
+    green = ((50, 150, 100), (70, 255, 255))
+    yellow = ((25, 150, 100), (35, 255, 255))
+
+    # Convert to HSV
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    # Create masks for each color.
+    red_mask = cv2.inRange(hsv, red[0], red[1])
+    green_mask = cv2.inRange(hsv, green[0], green[1])
+    yellow_mask = cv2.inRange(hsv, yellow[0], yellow[1])
+
+    # Dilate just a bit
+    red_mask = cv2.dilate(red_mask, kernel=np.ones((3, 3), np.uint8), iterations=1)
+    green_mask = cv2.dilate(green_mask, kernel=np.ones((3, 3), np.uint8), iterations=1)
+    yellow_mask = cv2.dilate(yellow_mask, kernel=np.ones((3, 3), np.uint8), iterations=1)
+
+    # Combine masks for displaying purposes.
+    # combined_mask = cv2.addWeighted(red_mask, 1, green_mask, 1, 0)
+    # combined_mask = cv2.addWeighted(combined_mask, 1, yellow_mask, 1, 0)
+    # if drawing_frame is not None:
+    #     combined_mask_color = cv2.cvtColor(combined_mask, cv2.COLOR_GRAY2BGR)
+    #     drawing_frame[:] = combined_mask_color
+
+    # Process each color.
+    red_ellipses = find_color_ellipses(red_mask)
+    green_ellipses = find_color_ellipses(green_mask)
+    yellow_ellipses = find_color_ellipses(yellow_mask)
+
+    # Draw ellipses on the drawing frame.
+    if drawing_frame is not None:
+        for ellipse in red_ellipses:
+            cv2.ellipse(drawing_frame, ellipse, (255, 255, 255), 2)
+        for ellipse in green_ellipses:
+            cv2.ellipse(drawing_frame, ellipse, (255, 255, 255), 2)
+        for ellipse in yellow_ellipses:
+            cv2.ellipse(drawing_frame, ellipse, (255, 255, 255), 2)
+    
+    if red_ellipses:
+        return 0
+    elif yellow_ellipses:
+        return 1
+    elif green_ellipses:
+        return 2
+    else:
+        return None
+
+def sequence(actions=None, when_done=None, elapsed_time=None):
     # Static variables
     if not hasattr(sequence, "start_time"):
         sequence.start_time = time.time()
@@ -412,7 +546,7 @@ def sequence(actions=None, when_done=None):
     ]
 
     # Get the elapsed time
-    elapsed_time = time.time() - sequence.start_time
+    elapsed_time = elapsed_time or (time.time() - sequence.start_time)
 
     action = None
     ac_time = 0
@@ -431,14 +565,136 @@ def sequence(actions=None, when_done=None):
         throttle, yaw, _ = action
     return throttle, yaw
 
-if __name__ == "__main__":
-    # Load intesection.png
-    frame = cv2.imread("./resources/screenshots/intersection4.png")
+def undistort_fisheye(img):
+    h, w = img.shape[:2]
+    sensor_w_mm = 3.68
+    sensor_h_mm = 2.76
+    f_mm = 3.15
+    fx = (f_mm / sensor_w_mm) * w
+    fy = (f_mm / sensor_h_mm) * h
+    cx = w / 2.0
+    cy = h / 2.0
+    K = np.array([
+        [fx,  0, cx],
+        [ 0, fy, cy],
+        [ 0,  0,  1]
+    ], dtype=np.float64)
+    D = np.array([0, 0, 0, 0], dtype=np.float64)
 
-    # For visualization, draw a line connecting the endpoints for each detected dotted line group.
-    stop_at_intersection(frame, frame)
+    # Undistort the image
+    new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
+        K, D, (w, h), np.eye(3), balance=0.0
+    )
+    map1, map2 = cv2.fisheye.initUndistortRectifyMap(
+        K, D, np.eye(3), new_K, (w, h), cv2.CV_16SC2
+    )
+    undistorted = cv2.remap(
+        img, map1, map2,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT
+    )
+    return undistorted
+
+def color_correct(img):
+    """
+    Removes a purple-ish tint around the borders by applying an inverse lens shading correction.
+    Assumes that at the image edges the gains are approximately:
+      - Red gain ~ 4.2
+      - Green gain ~ 3.26
+      - Blue gain ~ 3.12
+    This function builds a radial correction map that is 1 at the center and transitions linearly toward 1/edge_gain at the corners.
+    The full map is then re-normalized to preserve overall brightness.
+    """
+    # Convert to float for processing.
+    img_float = img.astype(np.float32)
+    height, width = img.shape[:2]
+    cx, cy = width / 2.0, height / 2.0
+    
+    # Maximum radial distance (from center to corner)
+    max_dist = np.sqrt(cx**2 + cy**2)
+
+    # Create a grid of (x,y) coordinates and compute normalized radial distance (0 at center, 1 at corner)
+    x = np.arange(width)
+    y = np.arange(height)
+    xv, yv = np.meshgrid(x, y)
+    dist = np.sqrt((xv - cx)**2 + (yv - cy)**2)
+    r = dist / max_dist
+
+    # Define the edge gains from calibration/lens shading tables.
+    red_edge_gain = 4.2
+    green_edge_gain = 3.26
+    blue_edge_gain = 3.12
+
+    # Compute per-channel correction factors:
+    # At r=0, factor is 1.
+    # At r=1, factor is 1/edge_gain.
+    corr_red = 1.0 - r * (1.0 - (1.0 / red_edge_gain))
+    corr_green = 1.0 - r * (1.0 - (1.0 / green_edge_gain))
+    corr_blue = 1.0 - r * (1.0 - (1.0 / blue_edge_gain))
+    
+    # Build the correction map (note: OpenCV uses BGR order)
+    raw_map = np.stack([corr_blue, corr_green, corr_red], axis=-1)
+    
+    # Re-normalize the map so that its mean is 1, preserving overall brightness.
+    norm_factor = np.mean(raw_map)
+    correction_map = raw_map / norm_factor
+
+    # Apply the correction map.
+    corrected = img_float * correction_map
+
+    # Clip to valid 8-bit range and convert back to uint8.
+    corrected = np.clip(corrected, 0, 255).astype(np.uint8)
+    return corrected
+
+def correct_purple(frame: np.ndarray,
+                   strength: float = 1.0,
+                   radius_ratio: float = 0.8) -> np.ndarray:
+    """
+    Reduce purple-ish hue at frame edges by radially desaturating magenta.
+    - strength: how aggressively to desaturate (0…1).
+    - radius_ratio: inner radius (as fraction of diag) before desaturation starts.
+    """
+    h, w = frame.shape[:2]
+    # Create normalized radial mask
+    xv, yv = np.meshgrid(np.linspace(0, w-1, w),
+                         np.linspace(0, h-1, h))
+    dx = xv - (w/2); dy = yv - (h/2)
+    dist = np.sqrt(dx*dx + dy*dy)
+    max_dist = np.sqrt((w/2)**2 + (h/2)**2)
+    # mask = 0 at center, 1 at edges beyond radius_ratio*max_dist
+    mask = np.clip((dist - radius_ratio*max_dist) /
+                   (max_dist - radius_ratio*max_dist), 0, 1)
+    mask = cv2.GaussianBlur(mask, (101,101), 0)  # smooth transition
+
+    # Convert to HSV for saturation control
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
+    # Desaturate edges
+    hsv[...,1] *= (1.0 - strength * mask)
+    hsv[...,1] = np.clip(hsv[...,1], 0, 255)
+
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+if __name__ == "__main__":
+    images = [
+        "./resources/screenshots/intersection4.png",
+        "./resources/screenshots/irl_intersection.png",
+        "./resources/screenshots/irl_intersection2.png",
+        "./resources/screenshots/sl_green.png",
+        "./resources/screenshots/sl_red.png",
+        "./resources/screenshots/sl_yellow.png",
+        "./resources/screenshots/green_circle.png",
+        "./resources/screenshots/red_circle.png",
+        "./resources/screenshots/yellow_circle.png",
+    ]
+    frame = cv2.imread(images[-2])
+    # frame = undistort_fisheye(frame)
+    # frame = color_correct(frame)
+    frame = correct_purple(frame, strength=2.0, radius_ratio=0.9)
+    # identify_intersection(frame, frame)
+    print(identify_stoplight(frame, frame))
 
     # Display the result.
     cv2.imshow("Display", frame)
+    # cv2.imshow("Display2", frame2)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
