@@ -3,6 +3,6 @@
 + allow passing a dedicated drawing frame
 + navigate_track
 + allow passing a decision function to navigate_track
++ reduce follow_line throttle authority according to stoplight, and keep resetting intersection stability timer when stoplight is green
++ allow boolean polling of controller axes
 - smarter intersection alignment algorithm
-- allow boolean polling of controller axes
-- reduce follow_line throttle authority according to stoplight, and keep resetting intersection stability timer when stoplight is green

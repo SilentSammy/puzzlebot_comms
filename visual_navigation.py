@@ -399,8 +399,8 @@ def navigate_track(frame, drawing_frame=None, decision_func=None):
     speed_factor = (stoplight or navigate_track.stoplight) * 0.5
 
     # Attempt to identify an intersection.
-    # intersection = identify_intersection(frame, drawing_frame=drawing_frame)
-    intersection = [None, None, None, None]
+    intersection = identify_intersection(frame, drawing_frame=drawing_frame)
+    # intersection = [None, None, None, None]
 
     # Are we close enough to the intersection?
     inter_hor = intersection[0] or intersection[3] if intersection else None
@@ -436,8 +436,8 @@ def waypoint_navigation(frame, drawing_frame=None):
 
     # Define the sequence of actions (v, w, t)
     actions = [
-        (0.2, 0, 2), # Move 50cm forward
-        (0, -math.radians(90), 2), # 180° turn
+        (0.18, 0, 6), # Move forward
+        (0, -math.radians(30), 6), # 180° turn
     ]
     throttle, yaw = sequence(actions=actions, speed_factor=s)
 
@@ -538,9 +538,18 @@ def sequence(actions=None, when_done=None, speed_factor=1):
 
     # Get the elapsed time
     since_last = time.time() - sequence.last_time
+    if since_last > 0.5: # If the time since last call is too long, reset the timer.
+        sequence.elapsed_time = 0
+        sequence.last_time = time.time()
+        since_last = 0
     sequence.elapsed_time += since_last * speed_factor
     sequence.last_time = time.time()
-    elapsed = sequence.elapsed_time % total_time
+
+    elapsed = sequence.elapsed_time
+    if elapsed > total_time: # done
+        if when_done:
+            when_done()
+    elapsed =  elapsed % total_time
 
     action = None
     ac_time = 0
@@ -551,12 +560,7 @@ def sequence(actions=None, when_done=None, speed_factor=1):
             break
     
     throttle, yaw = 0, 0
-    if action is None: # done
-        del sequence.start_time
-        if when_done:
-            when_done()
-    else:
-        throttle, yaw, _ = action
+    throttle, yaw, _ = action
     return throttle, yaw
 
 def undistort_fisheye(img):

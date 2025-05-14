@@ -76,22 +76,24 @@ def choose_direction(intersection, drawing_frame=None, time_limit=3):
     dir_labels = ["back", "left", "right", "front"]
     chosen_idx = -1
     avail_idxs = [i for i, d in enumerate(intersection) if d is not None]
-    keys = ['k', 'j', 'l', 'i']
+    # keys = ['k', 'j', 'l', 'i']
+    keys = [('k', 'DPAD_DOWN'), ('j', 'DPAD_LEFT'), ('l', 'DPAD_RIGHT'), ('i', 'DPAD_UP')]
     if drawing_frame is not None:
         for i, d in enumerate(intersection):
             if d is not None:
-                cv2.putText(drawing_frame, keys[i].upper(), d[1], cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 5)
+                cv2.putText(drawing_frame, keys[i][0].upper(), d[1], cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 5)
 
     for i, key in enumerate(keys):
-        if is_pressed(key):
+        if is_pressed(*key):
             if i in avail_idxs:
                 chosen_idx = i
                 break
     
-    # If more than 3 seconds have passed since the last choice
-    print(f"Time remaining: {time_limit - (time.time() - choose_direction.tmr):.2f} seconds")
-    if time.time() - choose_direction.tmr > time_limit or time_limit < 0:
-        chosen_idx = np.random.choice(avail_idxs)
+    # If the time limit is reached, choose a random direction
+    if time_limit >= 0:
+        print(f"Time remaining: {time_limit - (time.time() - choose_direction.tmr):.2f} seconds")
+        if time.time() - choose_direction.tmr > time_limit:
+            chosen_idx = np.random.choice(avail_idxs)
     
     if chosen_idx != -1:
         print(f"Chosen direction: {dir_labels[chosen_idx]}")
@@ -156,13 +158,13 @@ try:
         
         # Control
         if nav_mode == 2:
-            throttle, yaw = vn.navigate_track(frame, drawing_frame, lambda i: choose_direction(i, drawing_frame))
+            throttle, yaw = vn.navigate_track(frame, drawing_frame, lambda i: choose_direction(i, drawing_frame, -1))
         elif nav_mode == 3:
             throttle, yaw = vn.waypoint_navigation(frame, drawing_frame)
         elif nav_mode == 4:
             throttle, yaw = vn.follow_line(frame, drawing_frame)
         elif nav_mode == 5:
-            throttle, yaw = vn.sequence(speed_factor=1)
+            throttle, yaw = vn.sequence(speed_factor=2)
         
         # Always allow manual control
         thr, yw = manual_control()
