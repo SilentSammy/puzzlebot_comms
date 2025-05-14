@@ -3,8 +3,8 @@ import numpy as np
 import glob
 
 # — CONFIG — 
-CHECKERBOARD = (9, 6)             # number of inner corners per row, column
-square_size  = 0.024              # actual square size in meters (or any unit)
+CHECKERBOARD = (8, 5)             # number of inner corners per row, column
+square_size  = 0.03             # actual square size in meters (or any unit)
 
 # termination criteria for corner refinement
 criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 
@@ -21,7 +21,7 @@ objp[0,:,:2] = np.mgrid[0:CHECKERBOARD[0], 0:CHECKERBOARD[1]].T.reshape(-1, 2)
 objp *= square_size
 
 # — LOAD IMAGES & FIND CORNERS —
-images = glob.glob('./calibration_images/*.jpg')  # point this at your folder
+images = glob.glob('./screenshots/2025-05-14_14-54-40/*.png')  # point this at your folder
 
 for fname in images:
     img = cv2.imread(fname)

@@ -573,11 +573,11 @@ def undistort_fisheye(img):
     cx = w / 2.0
     cy = h / 2.0
     K = np.array([
-        [fx,  0, cx],
-        [ 0, fy, cy],
-        [ 0,  0,  1]
+        [394.32766428,   0.,         343.71433623],
+        [  0.,         524.94987967, 274.24900983],
+        [  0.,           0.,           1.]
     ], dtype=np.float64)
-    D = np.array([0, 0, 0, 0], dtype=np.float64)
+    D = np.array([-0.02983132, -0.02312677, 0.03447185, -0.02105932], dtype=np.float64)
 
     # Undistort the image
     new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(

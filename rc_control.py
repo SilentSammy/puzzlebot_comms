@@ -12,17 +12,17 @@ from simple_pid import PID
 import visual_navigation as vn
 
 # Connection
-# puzzlebot = PuzzlebotHttpClient("http://192.168.137.10:5000", safe_mode=True)
-puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
+puzzlebot = PuzzlebotHttpClient("http://192.168.137.10:5000", safe_mode=True)
+# puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
 
 # Maximum values for throttle and yaw
-max_yaw = math.radians(90)
-max_thr = 0.75
+max_yaw = math.radians(180)
+max_thr = 0.6
 
 def manual_control():
     from input_man import get_axis
     slow_thr = 0.2
-    slow_yaw = math.radians(45)
+    slow_yaw = math.radians(90)
 
     # Get keyboard input
     keyvert = 1 if is_pressed('w') else -1 if is_pressed('s') else 0
@@ -31,7 +31,8 @@ def manual_control():
 
     # Get controller input
     joyver = get_axis('LY')
-    joyhor = -get_axis('LX')
+    # joyhor = -get_axis('LX')
+    joyhor = -get_axis('RX')
     conboost = max(get_axis('RT'), get_axis('LT'))
 
     # Calculate the higher of the two absolute values
@@ -49,18 +50,14 @@ def manual_control():
     # print(f"Throttle: {thr:.2f}, Yaw: {yaw:.2f}")
     return thr, yaw
 
-def show_frame(frame, name="Frame", max_size=400):
-    h, w = frame.shape[:2]
-    if h > w:
-        new_h = max_size
-        new_w = int(w * (max_size / h))
-    else:
-        new_w = max_size
-        new_h = int(h * (max_size / w))
-    resized_frame = cv2.resize(frame, (new_w, new_h))
-    cv2.imshow(name, resized_frame)
+def show_frame(img, name, scale=1):
+    show_frame.first_time = show_frame.first_time if hasattr(show_frame, 'first_time') else True
+    cv2.namedWindow(name, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(name, cv2.WND_PROP_TOPMOST, 1)
-    cv2.setWindowProperty(name, cv2.WND_PROP_AUTOSIZE, cv2.WINDOW_NORMAL)  # Make the window resizable
+    if show_frame.first_time:
+        cv2.resizeWindow(name, int(img.shape[1]*scale), int(img.shape[0]*scale))
+        show_frame.first_time = False
+    cv2.imshow(name, img)
     if cv2.waitKey(1) & 0xFF == 27:
         raise KeyboardInterrupt
 
@@ -76,7 +73,6 @@ def choose_direction(intersection, drawing_frame=None, time_limit=3):
     dir_labels = ["back", "left", "right", "front"]
     chosen_idx = -1
     avail_idxs = [i for i, d in enumerate(intersection) if d is not None]
-    # keys = ['k', 'j', 'l', 'i']
     keys = [('k', 'DPAD_DOWN'), ('j', 'DPAD_LEFT'), ('l', 'DPAD_RIGHT'), ('i', 'DPAD_UP')]
     if drawing_frame is not None:
         for i, d in enumerate(intersection):
@@ -104,8 +100,14 @@ def screenshot(frame):
     import os
 
     # Static variables
-    screenshot.dir_path = screenshot.dir_path if hasattr(screenshot, 'dir_path') else "./resources/screenshots/"+time.strftime("%Y-%m-%d_%H-%M-%S")
+    screenshot.last_time = screenshot.last_time if hasattr(screenshot, 'last_time') else None
+    screenshot.dir_path = screenshot.dir_path if hasattr(screenshot, 'dir_path') else "./screenshots/"+time.strftime("%Y-%m-%d_%H-%M-%S")
     screenshot.count = screenshot.count if hasattr(screenshot, 'count') else 0
+
+    # If less than n seconds have passed since the last screenshot, return
+    if screenshot.last_time is not None and time.time() - screenshot.last_time < 0.5:
+        return
+    screenshot.last_time = time.time()
 
     # Make the directory if it doesn't exist
     os.makedirs(screenshot.dir_path, exist_ok=True)
@@ -123,15 +125,12 @@ try:
     while True:
         # Inputs and outputs
         frame = puzzlebot.get_frame()
-        # frame = vn.undistort_fisheye(frame)
+        frame = vn.undistort_fisheye(frame)
         drawing_frame = frame.copy()
         throttle, yaw = 0, 0
 
         # Optional screenshot
-        if rising_edge('p'):
-            screenshot(frame)
-        # Optional recording (spamming screenshots)
-        if is_toggled('r'):
+        if rising_edge('p') or is_toggled('o'):
             screenshot(frame)
 
         # Safe mode selection
@@ -155,6 +154,9 @@ try:
         elif rising_edge('5'):
             nav_mode = 5
             print("Control mode: Preprogrammed sequence")
+        elif rising_edge('6'):
+            nav_mode = 6
+            print("Testing mode")
         
         # Control
         if nav_mode == 2:
@@ -165,6 +167,32 @@ try:
             throttle, yaw = vn.follow_line(frame, drawing_frame)
         elif nav_mode == 5:
             throttle, yaw = vn.sequence(speed_factor=2)
+        elif nav_mode == 6:
+            # assume `frame` is your BGR image and `drawing_frame = frame.copy()`
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+            # flags can speed up or improve detection
+            # flags = (cv2.CALIB_CB_ADAPTIVE_THRESH
+            #     + cv2.CALIB_CB_NORMALIZE_IMAGE
+            #     + cv2.CALIB_CB_FAST_CHECK)
+            flags = ()
+
+            found, corners = cv2.findChessboardCorners(gray, (9, 6), flags)
+
+            if found:
+                # optional: refine corner locations
+                criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
+                            30, 1e-6)
+                corners = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
+
+                cv2.drawChessboardCorners(
+                    drawing_frame, (9, 6), corners, found
+                )
+                print("Chessboard detected")
+            else:
+                print("Chessboard not detected")
+
+            cv2.imshow("CalibCapture", gray)
         
         # Always allow manual control
         thr, yw = manual_control()
@@ -179,7 +207,9 @@ try:
         puzzlebot.send_vel(throttle, yaw, wait_for_completion=False)
         
         # print(vn.identify_stoplight(frame, drawing_frame))
-        show_frame(drawing_frame, "Puzzlebot Stream", 400)
+        # cv2.imshow("Undistorted", vn.undistort_fisheye(frame))
+        show_frame(drawing_frame, "Puzzlebot Stream")
+
 except KeyboardInterrupt:
     print("Exiting...")
 finally:
