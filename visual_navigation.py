@@ -426,8 +426,6 @@ def navigate_track(frame, drawing_frame=None, decision_func=None):
 
 def waypoint_navigation(frame, drawing_frame=None):
     waypoint_navigation.stoplight = waypoint_navigation.stoplight if hasattr(waypoint_navigation, "stoplight") else 2
-    waypoint_navigation.last_time = waypoint_navigation.last_time if hasattr(waypoint_navigation, "last_time") else time.time()
-    waypoint_navigation.elapsed_time = waypoint_navigation.elapsed_time if hasattr(waypoint_navigation, "elapsed_time") else 0
     
     # Determine the speed factor based on the stoplight.
     stoplight = identify_stoplight(frame, drawing_frame=drawing_frame)
@@ -436,21 +434,12 @@ def waypoint_navigation(frame, drawing_frame=None):
     speed_factor = (stoplight or waypoint_navigation.stoplight) * 0.5
     s = speed_factor
 
-    elapsed = time.time() - waypoint_navigation.last_time
-    waypoint_navigation.elapsed_time += elapsed * s
-    waypoint_navigation.last_time = time.time()
-
-
     # Define the sequence of actions (v, w, t)
     actions = [
         (0.2, 0, 2), # Move 50cm forward
         (0, -math.radians(90), 2), # 180° turn
     ]
-    actions = [(v*s, w*s, t) for v, w, t in actions] # Scale the actions by s
-    total_time = sum([t for _, _, t in actions])
-    waypoint_navigation.elapsed_time = waypoint_navigation.elapsed_time % total_time
-    print(waypoint_navigation.elapsed_time)
-    throttle, yaw = sequence(actions=actions, elapsed_time=waypoint_navigation.elapsed_time)
+    throttle, yaw = sequence(actions=actions, speed_factor=s)
 
     return throttle, yaw
 
@@ -533,10 +522,10 @@ def identify_stoplight(frame, drawing_frame = None):
     else:
         return None
 
-def sequence(actions=None, when_done=None, elapsed_time=None):
+def sequence(actions=None, when_done=None, speed_factor=1):
     # Static variables
-    if not hasattr(sequence, "start_time"):
-        sequence.start_time = time.time()
+    sequence.last_time = sequence.last_time if hasattr(sequence, "last_time") else time.time()
+    sequence.elapsed_time = sequence.elapsed_time if hasattr(sequence, "elapsed_time") else 0
     
     # Define the sequence of actions or use default
     actions = actions or [ # v, w, t
@@ -544,15 +533,20 @@ def sequence(actions=None, when_done=None, elapsed_time=None):
         (0, -math.radians(30), 3), # 90° turn
         (0.15, 0, 2), # Move 30cm forward
     ]
+    actions = [(v*speed_factor, w*speed_factor, t) for v, w, t in actions]
+    total_time = sum([t for _, _, t in actions])
 
     # Get the elapsed time
-    elapsed_time = elapsed_time or (time.time() - sequence.start_time)
+    since_last = time.time() - sequence.last_time
+    sequence.elapsed_time += since_last * speed_factor
+    sequence.last_time = time.time()
+    elapsed = sequence.elapsed_time % total_time
 
     action = None
     ac_time = 0
     for i, act in enumerate(actions):
         ac_time += act[2]
-        if elapsed_time < ac_time:
+        if elapsed < ac_time:
             action = act
             break
     
@@ -595,85 +589,6 @@ def undistort_fisheye(img):
     )
     return undistorted
 
-def color_correct(img):
-    """
-    Removes a purple-ish tint around the borders by applying an inverse lens shading correction.
-    Assumes that at the image edges the gains are approximately:
-      - Red gain ~ 4.2
-      - Green gain ~ 3.26
-      - Blue gain ~ 3.12
-    This function builds a radial correction map that is 1 at the center and transitions linearly toward 1/edge_gain at the corners.
-    The full map is then re-normalized to preserve overall brightness.
-    """
-    # Convert to float for processing.
-    img_float = img.astype(np.float32)
-    height, width = img.shape[:2]
-    cx, cy = width / 2.0, height / 2.0
-    
-    # Maximum radial distance (from center to corner)
-    max_dist = np.sqrt(cx**2 + cy**2)
-
-    # Create a grid of (x,y) coordinates and compute normalized radial distance (0 at center, 1 at corner)
-    x = np.arange(width)
-    y = np.arange(height)
-    xv, yv = np.meshgrid(x, y)
-    dist = np.sqrt((xv - cx)**2 + (yv - cy)**2)
-    r = dist / max_dist
-
-    # Define the edge gains from calibration/lens shading tables.
-    red_edge_gain = 4.2
-    green_edge_gain = 3.26
-    blue_edge_gain = 3.12
-
-    # Compute per-channel correction factors:
-    # At r=0, factor is 1.
-    # At r=1, factor is 1/edge_gain.
-    corr_red = 1.0 - r * (1.0 - (1.0 / red_edge_gain))
-    corr_green = 1.0 - r * (1.0 - (1.0 / green_edge_gain))
-    corr_blue = 1.0 - r * (1.0 - (1.0 / blue_edge_gain))
-    
-    # Build the correction map (note: OpenCV uses BGR order)
-    raw_map = np.stack([corr_blue, corr_green, corr_red], axis=-1)
-    
-    # Re-normalize the map so that its mean is 1, preserving overall brightness.
-    norm_factor = np.mean(raw_map)
-    correction_map = raw_map / norm_factor
-
-    # Apply the correction map.
-    corrected = img_float * correction_map
-
-    # Clip to valid 8-bit range and convert back to uint8.
-    corrected = np.clip(corrected, 0, 255).astype(np.uint8)
-    return corrected
-
-def correct_purple(frame: np.ndarray,
-                   strength: float = 1.0,
-                   radius_ratio: float = 0.8) -> np.ndarray:
-    """
-    Reduce purple-ish hue at frame edges by radially desaturating magenta.
-    - strength: how aggressively to desaturate (0…1).
-    - radius_ratio: inner radius (as fraction of diag) before desaturation starts.
-    """
-    h, w = frame.shape[:2]
-    # Create normalized radial mask
-    xv, yv = np.meshgrid(np.linspace(0, w-1, w),
-                         np.linspace(0, h-1, h))
-    dx = xv - (w/2); dy = yv - (h/2)
-    dist = np.sqrt(dx*dx + dy*dy)
-    max_dist = np.sqrt((w/2)**2 + (h/2)**2)
-    # mask = 0 at center, 1 at edges beyond radius_ratio*max_dist
-    mask = np.clip((dist - radius_ratio*max_dist) /
-                   (max_dist - radius_ratio*max_dist), 0, 1)
-    mask = cv2.GaussianBlur(mask, (101,101), 0)  # smooth transition
-
-    # Convert to HSV for saturation control
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
-    # Desaturate edges
-    hsv[...,1] *= (1.0 - strength * mask)
-    hsv[...,1] = np.clip(hsv[...,1], 0, 255)
-
-    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-
 if __name__ == "__main__":
     images = [
         "./resources/screenshots/intersection4.png",
@@ -687,10 +602,6 @@ if __name__ == "__main__":
         "./resources/screenshots/yellow_circle.png",
     ]
     frame = cv2.imread(images[-2])
-    # frame = undistort_fisheye(frame)
-    # frame = color_correct(frame)
-    frame = correct_purple(frame, strength=2.0, radius_ratio=0.9)
-    # identify_intersection(frame, frame)
     print(identify_stoplight(frame, frame))
 
     # Display the result.

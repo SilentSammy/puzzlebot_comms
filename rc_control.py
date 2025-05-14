@@ -162,7 +162,7 @@ try:
         elif nav_mode == 4:
             throttle, yaw = vn.follow_line(frame, drawing_frame)
         elif nav_mode == 5:
-            throttle, yaw = vn.sequence(when_done=reset_nav_mode)
+            throttle, yaw = vn.sequence(speed_factor=1)
         
         # Always allow manual control
         thr, yw = manual_control()
