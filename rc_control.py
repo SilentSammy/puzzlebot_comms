@@ -113,7 +113,7 @@ def screenshot(frame):
     os.makedirs(screenshot.dir_path, exist_ok=True)
 
     # Save the image
-    filename = os.path.join(screenshot.dir_path, f"screenshot_{screenshot.count}.png")
+    filename = os.path.join(screenshot.dir_path, f"screenshot_{screenshot.count:03}.png")
     cv2.imwrite(filename, frame)
     print(f"Screenshot saved: {filename}")
 
@@ -125,7 +125,7 @@ try:
     while True:
         # Inputs and outputs
         frame = puzzlebot.get_frame()
-        frame = vn.undistort_fisheye(frame)
+        # frame = vn.undistort_fisheye(frame)
         drawing_frame = frame.copy()
         throttle, yaw = 0, 0
 
@@ -200,8 +200,9 @@ try:
         yaw += yw
 
         # Disable output for debugging
-        # throttle = 0
-        # yaw = 0
+        if is_toggled('b'):
+            throttle = 0
+            yaw = 0
 
         # Send control commands to the robot
         puzzlebot.send_vel(throttle, yaw, wait_for_completion=False)

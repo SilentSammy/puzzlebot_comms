@@ -1,151 +1,155 @@
+import sys
+import os
+sys.path[:0] = [os.path.abspath(os.path.join(os.path.dirname(__file__), p)) for p in ('..', '../..')]
 from simple_pid import PID
 import numpy as np
 import math
 import cv2
 import time
 import pose_estimation as pe
-import image_test as it
 import keybrd
 
-def navigate_to_marker(frame, drawing_frame=None):
-    drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
-    # Static variables
-    max_yaw = math.radians(30)
-    max_thr = 0.2
-    yaw_threshold = 5.0  # The robot will start moving forward when the target is this many degrees from the center
-    if not hasattr(navigate_to_marker, "pids"):
-        navigate_to_marker.pids = {
-            'yaw_pid': PID(Kp=1, Ki=0, Kd=0.1, setpoint=0.0, output_limits=(-max_yaw, max_yaw)),
-            'throttle_pid': PID(Kp=2, Ki=0, Kd=0.1, setpoint=0.3, output_limits=(-max_thr, max_thr))
-        }
-    yaw_pid = navigate_to_marker.pids['yaw_pid']
-    thr_pid = navigate_to_marker.pids['throttle_pid']
+class VideoPlayer:
+    def __init__(self, frame_source):
+        self.frame_source = frame_source
+        self.frame_count = 0
+        self._frame_idx = 0.0
+        self.fps = 30  # Default FPS
+        self._get_frame = None
+        self.last_time = None
+        self.dt = 0.0
+        self.setup_video_source()
+        self.first_time = True
 
-    markers, ids = pe.find_arucos(frame, drawing_frame=drawing_frame)
-    if markers and ids is not None:
-        # Find the marker with the lowest ID
-        min_id_index = np.argmin(ids)
-        marker = markers[min_id_index]
-        # Remove extra nesting if necessary; otherwise, pass marker directly.
-        _, _, _, cam_dist, _, cam_yaw = pe.estimate_marker_pose( marker_corners=marker, frame=frame, ref_size=0.063300535, fov_x=math.radians(60) )
-        print(f"Dist: {cam_dist:.2f}, Yaw: {math.degrees(cam_yaw):.2f}")
-        yaw = yaw_pid(cam_yaw)
-        
-        # Compute interpolation factor 'alpha'
-        # alpha = 0 when yaw error is >= threshold, alpha = 1 when yaw error is 0.
-        alpha = 1 - (abs(cam_yaw) / math.radians(yaw_threshold)) if abs(cam_yaw) < math.radians(yaw_threshold) else 0
+    def show_frame(self, img, name, scale=1):
+        cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(name, cv2.WND_PROP_TOPMOST, 1)
+        if self.first_time:
+            self.first_time = False
+            cv2.resizeWindow(name, int(img.shape[1]*scale), int(img.shape[0]*scale))
+            self.first_time = False
+        cv2.imshow(name, img)
+        if cv2.waitKey(1) & 0xFF == 27:
+            raise KeyboardInterrupt
 
-        # Interpolate the distance input: when alpha is 0, measured distance is set to the setpoint.
-        measured_distance = (1 - alpha) * thr_pid.setpoint + alpha * cam_dist
-        throttle = -thr_pid(measured_distance)
-    else:
-        throttle, yaw = 0, 0
-        # Write "Searching for ArUco" on the frame
-        cv2.putText(drawing_frame, "Searching for ArUco", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+    def get_frame(self, idx=None):
+        if idx is None:
+            idx = self.frame_idx
+        return self._get_frame(idx)
 
-    return throttle, yaw
-
-def follow_line(frame, drawing_frame=None):
-    # If drawing_frame is provided, use it for drawing; otherwise, draw on a throwaway copy of the frame (inneficient but I'll fix it later).
-    drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
-
-    frame_height, frame_width = frame.shape[:2]
-
-    # Static variables
-    max_yaw = math.radians(60)
-    max_thr = 0.2
-    if not hasattr(follow_line, "yaw_pid"):
-        follow_line.yaw_pid = PID(Kp=0.6, Ki=0, Kd=0.1, setpoint=0.0, output_limits=(-max_yaw, max_yaw))
-
-    def get_line_candidates():
-        # Convert to binary mask, only keeping pixels darker than dark_thres.
-        dark_thres = 120
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(gray, dark_thres, 255, cv2.THRESH_BINARY_INV)
-        
-        # Shrink the vertical field of view to the lower part of the frame.
-        v_fov = 0.4
-        mask[:int(frame_height * (1-v_fov)), :] = 0
-        
-        # Erode and dilate to remove noise and fill gaps.
-        mask = cv2.erode(mask, kernel=np.ones((3, 3), np.uint8), iterations=5)
-        mask = cv2.dilate(mask, kernel=np.ones((3, 3), np.uint8), iterations=3)
-
-        # Find contours in the modified mask, filtering out noise.
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        MIN_AREA = 1000 # Minimum area of contours to consider
-        contours = [c for c in contours if cv2.contourArea(c) > MIN_AREA]
+    def step(self, step_size=1):
+        self._frame_idx += step_size
+        self._frame_idx = self._frame_idx % self.frame_count
     
-        return contours
+    def time_step(self):
+        self.dt = time.time() - self.last_time if self.last_time is not None else 0.0
+        self.last_time = time.time()
+        return self.dt
 
-    def get_contour_line(c, fix_vert=True):
-        vx, vy, cx, cy = cv2.fitLine(c, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
-        scale = 100  # Adjust scale as needed for visualization.
-        pt1 = (int(cx - vx * scale), int(cy - vy * scale))
-        pt2 = (int(cx + vx * scale), int(cy + vy * scale))
-        angle = math.degrees(math.atan2(vy, vx))
+    def move(self, speed=1):
+        self._frame_idx += speed * self.dt * self.fps
+        self._frame_idx = self._frame_idx % self.frame_count
 
-        if fix_vert:
-            # angle = angle # Placeholder for any angle correction logic.
-            angle = angle - 90 * np.sign(angle)
+    @property
+    def frame_idx(self):
+        return int(self._frame_idx)
 
-        return pt1, pt2, angle, cx, cy
-
-    contours = get_line_candidates()
-
-    # Show the direction of the line candidates
-    for i, c in enumerate(contours):
-        pt1, pt2, angle, cx, cy = get_contour_line(c)
-        cv2.line(drawing_frame, pt1, pt2, (0, 255, 0), 2)
-        # cv2.putText(drawing_frame, str(i), (int(cx), int(cy)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-        # print(f"Contour {i}: Angle: {angle:.2f} degrees") # Optionally print angles for debugging
-
-    throttle, yaw = 0, 0
-    if contours:
-        def contour_key(c):
-            # Define the maximum angle for clamping
-            max_angle = 80  # Adjust this value as needed
-            # Get the direction of the line and its centroid
-            _, _, angle, cx, cy = get_contour_line(c)
-            angle = max(min(angle, max_angle), -max_angle)
-            # Compute ref_x based on angle: 0° -> center, +max_angle -> left, -max_angle -> right.
-            ref_x = (frame_width / 2) + (angle / max_angle) * (frame_width / 2)
-            # Draw ref_x on the frame for debugging
-            # cv2.line(drawing_frame, (int(ref_x), 0), (int(ref_x), frame_height), (0, 0, 255), 2)
-            # Compute the error between the centroid and our adjusted reference.
-            x_err = abs(cx - ref_x)
-            # Return a tuple for sorting: first sort by lowest centroid (i.e. largest cy) then by x error.
-            return (x_err)
+    def setup_video_source(self):
+        # If frame_source is a folder, load images
+        if os.path.isdir(self.frame_source):
+            image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
+            image_files = sorted([
+                os.path.join(self.frame_source, f) 
+                for f in os.listdir(self.frame_source) 
+                if f.lower().endswith(image_extensions)
+            ])
+            self.frame_count = len(image_files)
+            print("Total frames (images):", self.frame_count)
             
-        # Choose the best candidate
-        sorted_contours = sorted(contours, key=contour_key)
-        line_contour = sorted_contours[0]
-        
-        # Draw the best candidate in green and the others in red.
-        cv2.drawContours(drawing_frame, [line_contour], -1, (0, 255, 0), 2)
-        for c in sorted_contours[1:]:
-            cv2.drawContours(drawing_frame, [c], -1, (0, 0, 255), 2)
+            def get_frame(idx):
+                idx = int(idx)
+                if idx < 0 or idx >= len(image_files):
+                    print("Index out of bounds:", idx)
+                    return None
+                frame = cv2.imread(image_files[idx])
+                if frame is None:
+                    print("Failed to load image", image_files[idx])
+                return frame
+            
+            self._get_frame = get_frame
+        else:
+            # Assume frame_source is a video file.
+            cap = cv2.VideoCapture(self.frame_source)
+            if not cap.isOpened():
+                print("Error opening video file:", self.frame_source)
+                exit(1)
+            
+            self.frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            print("Total frames:", self.frame_count)
+            
+            def get_frame(idx):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = cap.read()
+                if not ret:
+                    print("Failed to get frame", idx)
+                    return None
+                return frame
+            
+            self._get_frame = get_frame
 
-        # Get the X position of the line in the frame.
-        x, y, w, h = cv2.boundingRect(line_contour)
-        center_x = x + w // 2
-        normalized_x = (center_x - (frame_width/2)) / (frame_width/2)
-        cv2.line(drawing_frame, (center_x, 0), (center_x, frame_height), (255, 0, 0), 2)
-        
-        # Adjust yaw to keep the line centered in the frame.
-        yaw = follow_line.yaw_pid(normalized_x)
-        
-        # Decrease throttle as the line moves away from the center.
-        alignment = 1 - abs(normalized_x) # 1 when centered, 0 when at the edge.
-        align_thres = 0.3 # Throttle will be max_thr when aligned, 0 at the threshold, and negative below the threshold.
-        throttle = max_thr * ((alignment - align_thres) / (1 - align_thres))
-    else:
-        # Write "Searching for line" on the frame
-        cv2.putText(drawing_frame, "Searching for line", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+# GLOBAL CAMERA PARAMETERS
+K = np.array([
+    [394.32766428,   0.,         343.71433623],
+    [  0.,         524.94987967, 274.24900983],
+    [  0.,           0.,           1.        ]
+], dtype=np.float64)
+D = np.array([-0.02983132, -0.02312677, 0.03447185, -0.02105932], dtype=np.float64)
+
+# VISION HELPERS
+def undistort_fisheye(img, zoom=True):
+    """
+    Undistort a fisheye image.
+    If zoom=False, also returns a mask (uint8) where
+    valid pixels==1 and border fill==0.
+    """
+    h, w = img.shape[:2]
     
-    return throttle, yaw  # Comment this line to disable output
-    return 0, 0
+    # choose balance & borderMode
+    if zoom:
+        balance, borderMode = 0.0, cv2.BORDER_CONSTANT
+    else:
+        balance, borderMode = 1.0, cv2.BORDER_REPLICATE
 
+    # compute new camera matrix & remap
+    new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
+        K, D, (w, h), np.eye(3), balance=balance
+    )
+    map1, map2 = cv2.fisheye.initUndistortRectifyMap(
+        K, D, np.eye(3), new_K, (w, h), cv2.CV_16SC2
+    )
+    undistorted = cv2.remap(
+        img, map1, map2,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=borderMode
+    )
+
+    # if zoom=False, build & return a valid-pixel mask
+    if not zoom:
+        # start with a plane of ones
+        ones = np.ones((h, w), dtype=np.uint8)
+        # remap with constant=0 → zeros at any out-of-bounds
+        mask = cv2.remap(
+            ones, map1, map2,
+            interpolation=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0
+        )
+        return undistorted, mask
+
+    # otherwise just return the image
+    return undistorted, None
+
+# VISION ALGORITHMS
 def identify_intersection(frame, drawing_frame=None):
     drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
     def get_dotted_lines(frame, drawing_frame=None):
@@ -325,6 +329,279 @@ def identify_intersection(frame, drawing_frame=None):
         cv2.fillPoly(drawing_frame, [np.array([center, pt1, pt2], np.int32)], (0, 255, 0)) # Draw the triangle as a filled polygon
     return directions
 
+def identify_stoplight(frame, drawing_frame = None):
+    def find_color_ellipses(mask):
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        ellipses = []
+        for cnt in contours:
+            # 1. Filter out contours with fewer than 5 points.
+            if len(cnt) < 5:
+                continue
+            # 2. Fit an ellipse.
+            ellipse = cv2.fitEllipse(cnt)
+            (center_x, center_y), (axis1, axis2), angle = ellipse
+            # 3. Skip invalid ellipses.
+            if axis1 <= 0 or axis2 <= 0:
+                continue
+            # 4. Create a filled mask for the ellipse.
+            ellipse_mask = np.zeros(mask.shape, dtype=np.uint8)
+            cv2.ellipse(ellipse_mask, ellipse, 255, thickness=-1)
+            # 5. Count pixels in the ellipse that also appear in the original mask.
+            filled = cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=ellipse_mask))
+            # 6. Compute the theoretical ellipse area.
+            ellipse_area = math.pi * (axis1 / 2) * (axis2 / 2)
+            fill_ratio = filled / ellipse_area if ellipse_area > 0 else 0
+            # 7. Accept only if fill ratio is >= assumed threshold.
+            if fill_ratio < 0.85:
+                continue
+            # 8. Filter out ellipses where the minor axis is less than 0.5 of the major axis.
+            if min(axis1, axis2) < 0.5 * max(axis1, axis2):
+                continue
+            # 9. Filter out ellipses with normalized major axis outside desired bounds.
+            norm_major = max(axis1, axis2) / mask.shape[1]
+            if norm_major < 0.02 or norm_major > 0.5:
+                continue
+            ellipses.append(ellipse)
+        return ellipses
+
+    # Define hsv ranges
+    red = ((0, 100, 100), (10, 255, 255))
+    green = ((40, 100, 100), (80, 255, 255))
+    yellow = ((10, 100, 100), (40, 255, 255))
+
+    # Convert to HSV
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    # Create masks for each color.
+    red_mask = cv2.inRange(hsv, red[0], red[1])
+    green_mask = cv2.inRange(hsv, green[0], green[1])
+    yellow_mask = cv2.inRange(hsv, yellow[0], yellow[1])
+
+    # Dilate just a bit
+    red_mask = cv2.dilate(red_mask, kernel=np.ones((3, 3), np.uint8), iterations=1)
+    green_mask = cv2.dilate(green_mask, kernel=np.ones((3, 3), np.uint8), iterations=1)
+    yellow_mask = cv2.dilate(yellow_mask, kernel=np.ones((3, 3), np.uint8), iterations=1)
+
+    # Combine masks for displaying purposes.
+    # combined_mask = cv2.addWeighted(red_mask, 1, green_mask, 1, 0)
+    # combined_mask = cv2.addWeighted(combined_mask, 1, yellow_mask, 1, 0)
+    # if drawing_frame is not None:
+    #     combined_mask_color = cv2.cvtColor(combined_mask, cv2.COLOR_GRAY2BGR)
+    #     drawing_frame[:] = combined_mask_color
+
+    # Process each color.
+    red_ellipses = find_color_ellipses(red_mask)
+    green_ellipses = find_color_ellipses(green_mask)
+    yellow_ellipses = find_color_ellipses(yellow_mask)
+
+    # Draw ellipses on the drawing frame.
+    if drawing_frame is not None:
+        for ellipse in red_ellipses:
+            cv2.ellipse(drawing_frame, ellipse, (255, 255, 255), 2)
+        for ellipse in green_ellipses:
+            cv2.ellipse(drawing_frame, ellipse, (255, 255, 255), 2)
+        for ellipse in yellow_ellipses:
+            cv2.ellipse(drawing_frame, ellipse, (255, 255, 255), 2)
+    
+    if red_ellipses:
+        return 0
+    elif yellow_ellipses:
+        return 1
+    elif green_ellipses:
+        return 2
+    else:
+        return None
+
+# NAVIGATION ALGORITHMS (NON-BLOCKING, MUST BE CALLED IN A LOOP)
+def sequence(actions=None, when_done=None, speed_factor=1):
+    """ Execute a sequence of actions. Each action is a tuple (v, w, t) """
+
+    # Static variables
+    sequence.last_time = sequence.last_time if hasattr(sequence, "last_time") else time.time()
+    sequence.elapsed_time = sequence.elapsed_time if hasattr(sequence, "elapsed_time") else 0
+    
+    # Define the sequence of actions or use default
+    actions = actions or [ # v, w, t
+        (0.15, 0, 2), # Move 30cm forward
+        (0, -math.radians(30), 3), # 90° turn
+        (0.15, 0, 2), # Move 30cm forward
+    ]
+    actions = [(v*speed_factor, w*speed_factor, t) for v, w, t in actions]
+    total_time = sum([t for _, _, t in actions])
+
+    # Get the elapsed time
+    since_last = time.time() - sequence.last_time
+    if since_last > 0.5: # If the time since last call is too long, reset the timer.
+        sequence.elapsed_time = 0
+        sequence.last_time = time.time()
+        since_last = 0
+    sequence.elapsed_time += since_last * speed_factor
+    sequence.last_time = time.time()
+
+    elapsed = sequence.elapsed_time
+    if elapsed > total_time: # done
+        if when_done:
+            when_done()
+    elapsed =  elapsed % total_time
+
+    action = None
+    ac_time = 0
+    for i, act in enumerate(actions):
+        ac_time += act[2]
+        if elapsed < ac_time:
+            action = act
+            break
+    
+    throttle, yaw = 0, 0
+    throttle, yaw, _ = action
+    return throttle, yaw
+
+def navigate_to_marker(frame, drawing_frame=None):
+    """ Navigate to the closest ArUco marker. """
+
+    drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
+    # Static variables
+    max_yaw = math.radians(30)
+    max_thr = 0.2
+    yaw_threshold = 5.0  # The robot will start moving forward when the target is this many degrees from the center
+    if not hasattr(navigate_to_marker, "pids"):
+        navigate_to_marker.pids = {
+            'yaw_pid': PID(Kp=1, Ki=0, Kd=0.1, setpoint=0.0, output_limits=(-max_yaw, max_yaw)),
+            'throttle_pid': PID(Kp=2, Ki=0, Kd=0.1, setpoint=0.3, output_limits=(-max_thr, max_thr))
+        }
+    yaw_pid = navigate_to_marker.pids['yaw_pid']
+    thr_pid = navigate_to_marker.pids['throttle_pid']
+
+    markers, ids = pe.find_arucos(frame, drawing_frame=drawing_frame)
+    if markers and ids is not None:
+        # Find the marker with the lowest ID
+        min_id_index = np.argmin(ids)
+        marker = markers[min_id_index]
+        # Remove extra nesting if necessary; otherwise, pass marker directly.
+        _, _, _, cam_dist, _, cam_yaw = pe.estimate_marker_pose( marker_corners=marker, frame=frame, ref_size=0.063300535, fov_x=math.radians(60) )
+        print(f"Dist: {cam_dist:.2f}, Yaw: {math.degrees(cam_yaw):.2f}")
+        yaw = yaw_pid(cam_yaw)
+        
+        # Compute interpolation factor 'alpha'
+        # alpha = 0 when yaw error is >= threshold, alpha = 1 when yaw error is 0.
+        alpha = 1 - (abs(cam_yaw) / math.radians(yaw_threshold)) if abs(cam_yaw) < math.radians(yaw_threshold) else 0
+
+        # Interpolate the distance input: when alpha is 0, measured distance is set to the setpoint.
+        measured_distance = (1 - alpha) * thr_pid.setpoint + alpha * cam_dist
+        throttle = -thr_pid(measured_distance)
+    else:
+        throttle, yaw = 0, 0
+        # Write "Searching for ArUco" on the frame
+        cv2.putText(drawing_frame, "Searching for ArUco", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+
+    return throttle, yaw
+
+def follow_line(frame, drawing_frame=None):
+    """ Follow the line in the frame """
+
+    # If drawing_frame is provided, use it for drawing; otherwise, draw on a throwaway copy of the frame (inneficient but I'll fix it later).
+    drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
+
+    frame_height, frame_width = frame.shape[:2]
+
+    # Static variables
+    max_yaw = math.radians(60)
+    max_thr = 0.2
+    if not hasattr(follow_line, "yaw_pid"):
+        follow_line.yaw_pid = PID(Kp=0.6, Ki=0, Kd=0.1, setpoint=0.0, output_limits=(-max_yaw, max_yaw))
+
+    def get_line_candidates():
+        # Convert to binary mask, only keeping pixels darker than dark_thres.
+        dark_thres = 120
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray, dark_thres, 255, cv2.THRESH_BINARY_INV)
+        
+        # Shrink the vertical field of view to the lower part of the frame.
+        v_fov = 0.4
+        mask[:int(frame_height * (1-v_fov)), :] = 0
+        
+        # Erode and dilate to remove noise and fill gaps.
+        mask = cv2.erode(mask, kernel=np.ones((3, 3), np.uint8), iterations=5)
+        mask = cv2.dilate(mask, kernel=np.ones((3, 3), np.uint8), iterations=3)
+
+        # Find contours in the modified mask, filtering out noise.
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        MIN_AREA = 1000 # Minimum area of contours to consider
+        contours = [c for c in contours if cv2.contourArea(c) > MIN_AREA]
+
+        # Overwrite the drawing frame with the mask for debugging.
+        drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+
+        return contours
+
+    def get_contour_line(c, fix_vert=True):
+        vx, vy, cx, cy = cv2.fitLine(c, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
+        scale = 100  # Adjust scale as needed for visualization.
+        pt1 = (int(cx - vx * scale), int(cy - vy * scale))
+        pt2 = (int(cx + vx * scale), int(cy + vy * scale))
+        angle = math.degrees(math.atan2(vy, vx))
+
+        if fix_vert:
+            # angle = angle # Placeholder for any angle correction logic.
+            angle = angle - 90 * np.sign(angle)
+
+        return pt1, pt2, angle, cx, cy
+
+    contours = get_line_candidates()
+
+    # Show the direction of the line candidates
+    for i, c in enumerate(contours):
+        pt1, pt2, angle, cx, cy = get_contour_line(c)
+        cv2.line(drawing_frame, pt1, pt2, (0, 255, 0), 2)
+        # cv2.putText(drawing_frame, str(i), (int(cx), int(cy)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+        # print(f"Contour {i}: Angle: {angle:.2f} degrees") # Optionally print angles for debugging
+
+    throttle, yaw = 0, 0
+    if contours:
+        def contour_key(c):
+            # Define the maximum angle for clamping
+            max_angle = 80  # Adjust this value as needed
+            # Get the direction of the line and its centroid
+            _, _, angle, cx, cy = get_contour_line(c)
+            angle = max(min(angle, max_angle), -max_angle)
+            # Compute ref_x based on angle: 0° -> center, +max_angle -> left, -max_angle -> right.
+            ref_x = (frame_width / 2) + (angle / max_angle) * (frame_width / 2)
+            # Draw ref_x on the frame for debugging
+            # cv2.line(drawing_frame, (int(ref_x), 0), (int(ref_x), frame_height), (0, 0, 255), 2)
+            # Compute the error between the centroid and our adjusted reference.
+            x_err = abs(cx - ref_x)
+            # Return a tuple for sorting: first sort by lowest centroid (i.e. largest cy) then by x error.
+            return (x_err)
+            
+        # Choose the best candidate
+        sorted_contours = sorted(contours, key=contour_key)
+        line_contour = sorted_contours[0]
+        
+        # Draw the best candidate in green and the others in red.
+        cv2.drawContours(drawing_frame, [line_contour], -1, (0, 255, 0), 2)
+        for c in sorted_contours[1:]:
+            cv2.drawContours(drawing_frame, [c], -1, (0, 0, 255), 2)
+
+        # Get the X position of the line in the frame.
+        x, y, w, h = cv2.boundingRect(line_contour)
+        center_x = x + w // 2
+        normalized_x = (center_x - (frame_width/2)) / (frame_width/2)
+        cv2.line(drawing_frame, (center_x, 0), (center_x, frame_height), (255, 0, 0), 2)
+        
+        # Adjust yaw to keep the line centered in the frame.
+        yaw = follow_line.yaw_pid(normalized_x)
+        
+        # Decrease throttle as the line moves away from the center.
+        alignment = 1 - abs(normalized_x) # 1 when centered, 0 when at the edge.
+        align_thres = 0.3 # Throttle will be max_thr when aligned, 0 at the threshold, and negative below the threshold.
+        throttle = max_thr * ((alignment - align_thres) / (1 - align_thres))
+    else:
+        # Write "Searching for line" on the frame
+        cv2.putText(drawing_frame, "Searching for line", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+    
+    return throttle, yaw  # Comment this line to disable output
+    return 0, 0
+
 def stop_at_intersection(frame, drawing_frame=None, intersection=None):
     # Static variables
     max_yaw = math.radians(30)
@@ -436,180 +713,52 @@ def waypoint_navigation(frame, drawing_frame=None):
 
     # Define the sequence of actions (v, w, t)
     actions = [
-        (0.18, 0, 6), # Move forward
+        (0.18, 0, 12), # Move forward
         (0, -math.radians(30), 6), # 180° turn
     ]
     throttle, yaw = sequence(actions=actions, speed_factor=s)
 
     return throttle, yaw
 
-def identify_stoplight(frame, drawing_frame = None):
-    def find_color_ellipses(mask):
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        ellipses = []
-        for cnt in contours:
-            # 1. Filter out contours with fewer than n points.
-            if len(cnt) < 5:
-                continue
-            # 2. Fit an ellipse.
-            ellipse = cv2.fitEllipse(cnt)
-            (center_x, center_y), (axis1, axis2), angle = ellipse
-            # 3. Skip invalid ellipses.
-            if axis1 <= 0 or axis2 <= 0:
-                continue
-            # 4. Create a filled mask for the ellipse.
-            ellipse_mask = np.zeros(mask.shape, dtype=np.uint8)
-            cv2.ellipse(ellipse_mask, ellipse, 255, thickness=-1)
-            # 5. Count pixels in the ellipse that also appear in the original mask.
-            filled = cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=ellipse_mask))
-            # 6. Compute the theoretical ellipse area.
-            ellipse_area = math.pi * (axis1 / 2) * (axis2 / 2)
-            fill_ratio = filled / ellipse_area if ellipse_area > 0 else 0
-            # 7. Accept only if fill ratio is >= 0.9.
-            if fill_ratio < 0.8:
-                continue
-            # 8. Filter out ellipses where the minor axis is less than 0.5 of the major axis.
-            if min(axis1, axis2) < 0.5 * max(axis1, axis2):
-                continue
-            ellipses.append(ellipse)
-        return ellipses
-
-    # Define hsv ranges
-    red = ((0, 150, 100), (10, 255, 255))
-    green = ((50, 150, 100), (70, 255, 255))
-    yellow = ((25, 150, 100), (35, 255, 255))
-
-    # Convert to HSV
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-    # Create masks for each color.
-    red_mask = cv2.inRange(hsv, red[0], red[1])
-    green_mask = cv2.inRange(hsv, green[0], green[1])
-    yellow_mask = cv2.inRange(hsv, yellow[0], yellow[1])
-
-    # Dilate just a bit
-    red_mask = cv2.dilate(red_mask, kernel=np.ones((3, 3), np.uint8), iterations=1)
-    green_mask = cv2.dilate(green_mask, kernel=np.ones((3, 3), np.uint8), iterations=1)
-    yellow_mask = cv2.dilate(yellow_mask, kernel=np.ones((3, 3), np.uint8), iterations=1)
-
-    # Combine masks for displaying purposes.
-    # combined_mask = cv2.addWeighted(red_mask, 1, green_mask, 1, 0)
-    # combined_mask = cv2.addWeighted(combined_mask, 1, yellow_mask, 1, 0)
-    # if drawing_frame is not None:
-    #     combined_mask_color = cv2.cvtColor(combined_mask, cv2.COLOR_GRAY2BGR)
-    #     drawing_frame[:] = combined_mask_color
-
-    # Process each color.
-    red_ellipses = find_color_ellipses(red_mask)
-    green_ellipses = find_color_ellipses(green_mask)
-    yellow_ellipses = find_color_ellipses(yellow_mask)
-
-    # Draw ellipses on the drawing frame.
-    if drawing_frame is not None:
-        for ellipse in red_ellipses:
-            cv2.ellipse(drawing_frame, ellipse, (255, 255, 255), 2)
-        for ellipse in green_ellipses:
-            cv2.ellipse(drawing_frame, ellipse, (255, 255, 255), 2)
-        for ellipse in yellow_ellipses:
-            cv2.ellipse(drawing_frame, ellipse, (255, 255, 255), 2)
-    
-    if red_ellipses:
-        return 0
-    elif yellow_ellipses:
-        return 1
-    elif green_ellipses:
-        return 2
-    else:
-        return None
-
-def sequence(actions=None, when_done=None, speed_factor=1):
-    # Static variables
-    sequence.last_time = sequence.last_time if hasattr(sequence, "last_time") else time.time()
-    sequence.elapsed_time = sequence.elapsed_time if hasattr(sequence, "elapsed_time") else 0
-    
-    # Define the sequence of actions or use default
-    actions = actions or [ # v, w, t
-        (0.15, 0, 2), # Move 30cm forward
-        (0, -math.radians(30), 3), # 90° turn
-        (0.15, 0, 2), # Move 30cm forward
-    ]
-    actions = [(v*speed_factor, w*speed_factor, t) for v, w, t in actions]
-    total_time = sum([t for _, _, t in actions])
-
-    # Get the elapsed time
-    since_last = time.time() - sequence.last_time
-    if since_last > 0.5: # If the time since last call is too long, reset the timer.
-        sequence.elapsed_time = 0
-        sequence.last_time = time.time()
-        since_last = 0
-    sequence.elapsed_time += since_last * speed_factor
-    sequence.last_time = time.time()
-
-    elapsed = sequence.elapsed_time
-    if elapsed > total_time: # done
-        if when_done:
-            when_done()
-    elapsed =  elapsed % total_time
-
-    action = None
-    ac_time = 0
-    for i, act in enumerate(actions):
-        ac_time += act[2]
-        if elapsed < ac_time:
-            action = act
-            break
-    
-    throttle, yaw = 0, 0
-    throttle, yaw, _ = action
-    return throttle, yaw
-
-def undistort_fisheye(img):
-    h, w = img.shape[:2]
-    sensor_w_mm = 3.68
-    sensor_h_mm = 2.76
-    f_mm = 3.15
-    fx = (f_mm / sensor_w_mm) * w
-    fy = (f_mm / sensor_h_mm) * h
-    cx = w / 2.0
-    cy = h / 2.0
-    K = np.array([
-        [394.32766428,   0.,         343.71433623],
-        [  0.,         524.94987967, 274.24900983],
-        [  0.,           0.,           1.]
-    ], dtype=np.float64)
-    D = np.array([-0.02983132, -0.02312677, 0.03447185, -0.02105932], dtype=np.float64)
-
-    # Undistort the image
-    new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
-        K, D, (w, h), np.eye(3), balance=0.0
-    )
-    map1, map2 = cv2.fisheye.initUndistortRectifyMap(
-        K, D, np.eye(3), new_K, (w, h), cv2.CV_16SC2
-    )
-    undistorted = cv2.remap(
-        img, map1, map2,
-        interpolation=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT
-    )
-    return undistorted
-
 if __name__ == "__main__":
-    images = [
-        "./resources/screenshots/intersection4.png",
-        "./resources/screenshots/irl_intersection.png",
-        "./resources/screenshots/irl_intersection2.png",
-        "./resources/screenshots/sl_green.png",
-        "./resources/screenshots/sl_red.png",
-        "./resources/screenshots/sl_yellow.png",
-        "./resources/screenshots/green_circle.png",
-        "./resources/screenshots/red_circle.png",
-        "./resources/screenshots/yellow_circle.png",
-    ]
-    frame = cv2.imread(images[-2])
-    print(identify_stoplight(frame, frame))
+    vp = VideoPlayer(r"resources/screenshots/track2")
+    re = keybrd.rising_edge # Function to check if a key is pressed once
+    pr = keybrd.is_pressed  # Function to check if a key is held down
+    tg = keybrd.is_toggled  # Function to check if a key is toggled
+    
+    while True:
+        # Get current frame
+        vp.time_step()
+        vp.move(1 if pr('d') else -1 if pr('a') else 0)  # Move forward/backward
+        vp.move((1 if pr('e') else -1 if pr('q') else 0) * 10)  # Fast forward/backward
+        vp.step(1 if re('w') else -1 if re('s') else 0)  # Step forward/backward
+        mask = None
+        frame = vp.get_frame()
+        drawing_frame = frame.copy()
 
-    # Display the result.
-    cv2.imshow("Display", frame)
-    # cv2.imshow("Display2", frame2)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+        # Print the current frame
+        print(f"Frame {vp.frame_idx}/{vp.frame_count} ", end='')
+
+        # Optionally undistort the fisheye image
+        if tg('1'):
+            print("Undistort1", end=', ')
+            frame, mask = undistort_fisheye(frame)
+            drawing_frame = frame.copy()
+        elif tg('2'):
+            print("Undistort2", end=', ')
+            frame, mask = undistort_fisheye(frame, False)
+            drawing_frame = frame.copy()
+        if tg('3'):
+            print("line", end=', ')
+            follow_line(frame, drawing_frame=drawing_frame)
+
+        print()
+    
+        if re('p'):
+            # Save the current frame as an image.
+            output_file = f"frame_{vp.frame_idx}.png"
+            cv2.imwrite(output_file, frame)
+            print(f"Saved frame {vp.frame_idx} as {output_file}")
+
+        # Show
+        vp.show_frame(drawing_frame, "Frame")
