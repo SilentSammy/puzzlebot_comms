@@ -329,7 +329,7 @@ def identify_intersection(frame, drawing_frame=None):
         cv2.fillPoly(drawing_frame, [np.array([center, pt1, pt2], np.int32)], (0, 255, 0)) # Draw the triangle as a filled polygon
     return directions
 
-def identify_stoplight(frame, drawing_frame = None):
+def identify_stoplight(frame, drawing_frame=None):
     def find_color_ellipses(mask):
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         ellipses = []
@@ -496,105 +496,41 @@ def navigate_to_marker(frame, drawing_frame=None):
 
     return throttle, yaw
 
-def follow_line(frame, drawing_frame=None):
+def follow_line(frame, drawing_frame=None,
+    Kp=0.6, Ki=0, Kd=0.1, # PID parameters
+    max_yaw=math.radians(60), # Maximum yaw in radians
+    max_thr=0.2, # Maximum throttle
+    align_thres = 0.3 # Throttle will be max_thr when aligned, 0 at the threshold, and negative below the threshold.
+):
     """ Follow the line in the frame """
 
-    # If drawing_frame is provided, use it for drawing; otherwise, draw on a throwaway copy of the frame (inneficient but I'll fix it later).
-    drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
-
-    frame_height, frame_width = frame.shape[:2]
-
     # Static variables
-    max_yaw = math.radians(60)
-    max_thr = 0.2
-    if not hasattr(follow_line, "yaw_pid"):
-        follow_line.yaw_pid = PID(Kp=0.6, Ki=0, Kd=0.1, setpoint=0.0, output_limits=(-max_yaw, max_yaw))
+    follow_line.yaw_pid = follow_line.yaw_pid if hasattr(follow_line, "yaw_pid") else PID(Kp=Kp, Ki=Ki, Kd=Kd, setpoint=0.0, output_limits=(-max_yaw, max_yaw))
 
-    def get_line_candidates():
-        # Convert to binary mask, only keeping pixels darker than dark_thres.
-        dark_thres = 120
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(gray, dark_thres, 255, cv2.THRESH_BINARY_INV)
-        
-        # Shrink the vertical field of view to the lower part of the frame.
-        v_fov = 0.4
-        mask[:int(frame_height * (1-v_fov)), :] = 0
-        
-        # Erode and dilate to remove noise and fill gaps.
-        mask = cv2.erode(mask, kernel=np.ones((3, 3), np.uint8), iterations=5)
-        mask = cv2.dilate(mask, kernel=np.ones((3, 3), np.uint8), iterations=3)
-
-        # Find contours in the modified mask, filtering out noise.
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        MIN_AREA = 1000 # Minimum area of contours to consider
-        contours = [c for c in contours if cv2.contourArea(c) > MIN_AREA]
-
-        # Overwrite the drawing frame with the mask for debugging.
-        drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-
-        return contours
-
-    def get_contour_line(c, fix_vert=True):
-        vx, vy, cx, cy = cv2.fitLine(c, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
-        scale = 100  # Adjust scale as needed for visualization.
-        pt1 = (int(cx - vx * scale), int(cy - vy * scale))
-        pt2 = (int(cx + vx * scale), int(cy + vy * scale))
-        angle = math.degrees(math.atan2(vy, vx))
-
-        if fix_vert:
-            # angle = angle # Placeholder for any angle correction logic.
-            angle = angle - 90 * np.sign(angle)
-
-        return pt1, pt2, angle, cx, cy
-
-    contours = get_line_candidates()
-
-    # Show the direction of the line candidates
-    for i, c in enumerate(contours):
-        pt1, pt2, angle, cx, cy = get_contour_line(c)
-        cv2.line(drawing_frame, pt1, pt2, (0, 255, 0), 2)
-        # cv2.putText(drawing_frame, str(i), (int(cx), int(cy)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-        # print(f"Contour {i}: Angle: {angle:.2f} degrees") # Optionally print angles for debugging
+    # Get and unpck the line
+    line = get_middle_line(frame, drawing_frame=drawing_frame)
+    contour, (pt1, pt2, cx, cy, angle, length) = line
 
     throttle, yaw = 0, 0
-    if contours:
-        def contour_key(c):
-            # Define the maximum angle for clamping
-            max_angle = 80  # Adjust this value as needed
-            # Get the direction of the line and its centroid
-            _, _, angle, cx, cy = get_contour_line(c)
-            angle = max(min(angle, max_angle), -max_angle)
-            # Compute ref_x based on angle: 0° -> center, +max_angle -> left, -max_angle -> right.
-            ref_x = (frame_width / 2) + (angle / max_angle) * (frame_width / 2)
-            # Draw ref_x on the frame for debugging
-            # cv2.line(drawing_frame, (int(ref_x), 0), (int(ref_x), frame_height), (0, 0, 255), 2)
-            # Compute the error between the centroid and our adjusted reference.
-            x_err = abs(cx - ref_x)
-            # Return a tuple for sorting: first sort by lowest centroid (i.e. largest cy) then by x error.
-            return (x_err)
-            
-        # Choose the best candidate
-        sorted_contours = sorted(contours, key=contour_key)
-        line_contour = sorted_contours[0]
-        
-        # Draw the best candidate in green and the others in red.
-        cv2.drawContours(drawing_frame, [line_contour], -1, (0, 255, 0), 2)
-        for c in sorted_contours[1:]:
-            cv2.drawContours(drawing_frame, [c], -1, (0, 0, 255), 2)
-
+    if line:
         # Get the X position of the line in the frame.
-        x, y, w, h = cv2.boundingRect(line_contour)
+        frame_height, frame_width = frame.shape[:2]
+        x, y, w, h = cv2.boundingRect(contour)
         center_x = x + w // 2
         normalized_x = (center_x - (frame_width/2)) / (frame_width/2)
-        cv2.line(drawing_frame, (center_x, 0), (center_x, frame_height), (255, 0, 0), 2)
         
         # Adjust yaw to keep the line centered in the frame.
         yaw = follow_line.yaw_pid(normalized_x)
         
         # Decrease throttle as the line moves away from the center.
         alignment = 1 - abs(normalized_x) # 1 when centered, 0 when at the edge.
-        align_thres = 0.3 # Throttle will be max_thr when aligned, 0 at the threshold, and negative below the threshold.
         throttle = max_thr * ((alignment - align_thres) / (1 - align_thres))
+
+        # Optionally draw stats on the frame
+        if drawing_frame is not None:
+            cv2.line(drawing_frame, (center_x, 0), (center_x, frame_height), (255, 0, 0), 2)
+            cv2.putText(drawing_frame, f"v: {throttle:.2f} m/s", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+            cv2.putText(drawing_frame, f"w: {math.degrees(yaw):.2f} deg/s", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
     else:
         # Write "Searching for line" on the frame
         cv2.putText(drawing_frame, "Searching for line", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
@@ -720,11 +656,143 @@ def waypoint_navigation(frame, drawing_frame=None):
 
     return throttle, yaw
 
+# TESTS
+def adaptive_thres(frame, drawing_frame=None,
+    blur_kernel_size=(7, 7),  # Kernel size for GaussianBlur
+    adaptive_method=cv2.ADAPTIVE_THRESH_GAUSSIAN_C,  # Adaptive thresholding method
+    threshold_type=cv2.THRESH_BINARY_INV,  # Thresholding type
+    block_size=141,  # Size of the neighborhood used for thresholding (must be odd)
+    c_value=6,  # Constant subtracted from the mean or weighted mean (the higher the value, the darker the pixels need to be to be considered black)
+):
+    # Processing
+    drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, blur_kernel_size, 0)
+    mask = cv2.adaptiveThreshold(gray, 255, adaptive_method, threshold_type, block_size, c_value)
+    drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    return mask
+
+def get_line_mask(frame, drawing_frame=None,
+    v_fov = 0.4,  # Bottom field of view (0.4 = 40% of the frame height)
+    morph_kernel = np.ones((5, 5), np.uint8),  # Kernel for morphological operations
+    erode_iterations = 4,  # Number of iterations for erosion
+    dilate_iterations = 6,  # Number of iterations for dilation
+):
+    # Apply adaptive thresholding
+    mask = adaptive_thres(frame)
+
+    # Only keep the lower part of the mask, filling the upper part with black.
+    mask[:int(frame.shape[:2][0] * (1-v_fov)), :] = 0
+
+    # Erode and dilate to remove noise and fill gaps.
+    mask = cv2.erode(mask, kernel=morph_kernel, iterations=erode_iterations)
+    mask = cv2.dilate(mask, kernel=morph_kernel, iterations=dilate_iterations)
+
+    # Overwrite the drawing frame with the mask for debugging.
+    if drawing_frame is not None:
+        drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    return mask
+
+def get_line_candidates(frame, drawing_frame=None,
+    min_area=2000,
+    min_length=90,
+):
+    # Helper function to get line-related info from a contour
+    def get_contour_line_info(c, fix_vert=True):
+        # Fit a line to the contour
+        vx, vy, cx, cy = cv2.fitLine(c, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
+        
+        # Project contour points onto the line's direction vector.
+        projections = [((pt[0][0] - cx) * vx + (pt[0][1] - cy) * vy) for pt in c]
+        min_proj = min(projections)
+        max_proj = max(projections)
+        
+        # Compute endpoints from the extreme projection values.
+        pt1 = (int(cx + vx * min_proj), int(cy + vy * min_proj))
+        pt2 = (int(cx + vx * max_proj), int(cy + vy * max_proj))
+        
+        # Calculate the line angle in degrees.
+        angle = math.degrees(math.atan2(vy, vx))
+        if fix_vert:
+            angle = angle - 90 * np.sign(angle)
+        
+        # Calculate the line length given pt1 and pt2.
+        length = math.hypot(pt2[0] - pt1[0], pt2[1] - pt1[1])
+        
+        return pt1, pt2, angle, cx, cy, length
+
+    mask = get_line_mask(frame)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours = [c for c in contours if cv2.contourArea(c) > min_area]
+
+    lines = [ get_contour_line_info(c) for c in contours ]
+    lines = zip(contours, lines)
+    lines = [l for l in lines if l[1][5] > min_length]  # Filter by length
+    if drawing_frame is not None:
+        contours = [l[0] for l in lines]
+
+        # Draw the lines on the drawing frame
+        for i, l in enumerate(lines):
+            contour, (pt1, pt2, angle, cx, cy, _) = l # Unpack the tuple
+            cv2.drawContours(drawing_frame, [contour], -1, (0, 255, 255), 2)
+            cv2.line(drawing_frame, pt1, pt2, (0, 255, 255), 2)
+            cv2.putText(drawing_frame, str(i), (int(cx), int(cy)), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
+    return zip(*lines) if lines else ([], [])
+
+def get_middle_line(frame, drawing_frame=None):
+    # Helper function to sort the contours
+    def line_key(l):
+        l = l[1]
+        # Define the maximum angle for clamping
+        max_angle = 80  # Adjust this value as needed
+        # Get the direction of the line and its centroid
+        _, _, angle, cx, cy, _ = l
+        angle = max(min(angle, max_angle), -max_angle)
+        # Compute ref_x based on angle: 0° -> center, +max_angle -> left, -max_angle -> right.
+        ref_x = (frame_width / 2) + (angle / max_angle) * (frame_width / 2)
+        # Draw ref_x on the frame for debugging
+        # cv2.line(drawing_frame, (int(ref_x), 0), (int(ref_x), frame_height), (0, 0, 255), 2)
+        # Compute the error between the centroid and our adjusted reference.
+        x_err = abs(cx - ref_x)
+        # Return a tuple for sorting: first sort by lowest centroid (i.e. largest cy) then by x error.
+        return (x_err)
+
+    # Frame size    
+    frame_height, frame_width = frame.shape[:2]
+
+    # Get the line candidates
+    contours, lines = get_line_candidates(frame)
+    lines = zip(contours, lines)
+
+    if contours:
+        # Sort by key
+        lines = sorted(lines, key=line_key)
+
+        # Choose the best candidate
+        best_line = lines[0]
+        
+        # Draw the best candidate in green and the others in red.
+        if drawing_frame is not None:
+            cv2.drawContours(drawing_frame, [best_line[0]], -1, (0, 255, 0), 2)
+            cv2.drawContours(drawing_frame, [c[0] for c in lines[1:]], -1, (0, 0, 255), 2)
+
+        # Return the zipped line
+        return best_line
+
+line_detection_pipeline = [
+    ("adaptive_thres", lambda: adaptive_thres(frame, drawing_frame)),
+    ("line_mask", lambda: get_line_mask(frame, drawing_frame)),
+    ("line_candidates", lambda: get_line_candidates(frame, drawing_frame)),
+    ("middle_line", lambda: get_middle_line(frame, drawing_frame)),
+    ("follow_line", lambda: follow_line(frame, drawing_frame)),
+]
+
 if __name__ == "__main__":
-    vp = VideoPlayer(r"resources/screenshots/track2")
+    vp = VideoPlayer(r"resources/videos/track2.mp4")  # Path to the video file
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
+    layer = 1
     
     while True:
         # Get current frame
@@ -739,25 +807,26 @@ if __name__ == "__main__":
         # Print the current frame
         print(f"Frame {vp.frame_idx}/{vp.frame_count} ", end='')
 
-        # Optionally undistort the fisheye image
-        if tg('1'):
-            print("Undistort1", end=', ')
-            frame, mask = undistort_fisheye(frame)
-            drawing_frame = frame.copy()
-        elif tg('2'):
-            print("Undistort2", end=', ')
-            frame, mask = undistort_fisheye(frame, False)
-            drawing_frame = frame.copy()
-        if tg('3'):
-            print("line", end=', ')
-            follow_line(frame, drawing_frame=drawing_frame)
+        # Choose layer to show
+        for i in range(1, 10):
+            if re(str(i)):
+                layer = i
+                break
+        
+        pipeline = line_detection_pipeline
+
+        # Choose the layer to show. Layer 1 is do nothing. Layer 2 is index 0 in the pipeline, etc.
+        if layer >= 2 and layer <= len(pipeline) + 1:
+            name, func = pipeline[layer - 2]
+            print(name, end=', ')
+            func()
 
         print()
     
         if re('p'):
             # Save the current frame as an image.
-            output_file = f"frame_{vp.frame_idx}.png"
-            cv2.imwrite(output_file, frame)
+            output_file = f"frame_{vp.frame_idx}_layer_{layer}.png"
+            cv2.imwrite(output_file, drawing_frame)
             print(f"Saved frame {vp.frame_idx} as {output_file}")
 
         # Show

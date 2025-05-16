@@ -12,8 +12,8 @@ from simple_pid import PID
 import visual_navigation as vn
 
 # Connection
-puzzlebot = PuzzlebotHttpClient("http://192.168.137.10:5000", safe_mode=True)
-# puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
+# puzzlebot = PuzzlebotHttpClient("http://192.168.137.10:5000", safe_mode=True)
+puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
 
 # Maximum values for throttle and yaw
 max_yaw = math.radians(180)
@@ -105,7 +105,7 @@ def screenshot(frame):
     screenshot.count = screenshot.count if hasattr(screenshot, 'count') else 0
 
     # If less than n seconds have passed since the last screenshot, return
-    if screenshot.last_time is not None and time.time() - screenshot.last_time < 0.5:
+    if screenshot.last_time is not None and time.time() - screenshot.last_time < 0.2:
         return
     screenshot.last_time = time.time()
 
