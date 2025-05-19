@@ -164,35 +164,9 @@ try:
         elif nav_mode == 3:
             throttle, yaw = vn.waypoint_navigation(frame, drawing_frame)
         elif nav_mode == 4:
-            throttle, yaw = vn.follow_line(frame, drawing_frame)
+            throttle, yaw = vn.follow_line(frame, drawing_frame, max_thr=0.2, align_thres=0.3)
         elif nav_mode == 5:
             throttle, yaw = vn.sequence(speed_factor=2)
-        elif nav_mode == 6:
-            # assume `frame` is your BGR image and `drawing_frame = frame.copy()`
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-            # flags can speed up or improve detection
-            # flags = (cv2.CALIB_CB_ADAPTIVE_THRESH
-            #     + cv2.CALIB_CB_NORMALIZE_IMAGE
-            #     + cv2.CALIB_CB_FAST_CHECK)
-            flags = ()
-
-            found, corners = cv2.findChessboardCorners(gray, (9, 6), flags)
-
-            if found:
-                # optional: refine corner locations
-                criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
-                            30, 1e-6)
-                corners = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
-
-                cv2.drawChessboardCorners(
-                    drawing_frame, (9, 6), corners, found
-                )
-                print("Chessboard detected")
-            else:
-                print("Chessboard not detected")
-
-            cv2.imshow("CalibCapture", gray)
         
         # Always allow manual control
         thr, yw = manual_control()
@@ -200,15 +174,16 @@ try:
         yaw += yw
 
         # Disable output for debugging
-        if is_toggled('b'):
+        if rising_edge('0'):
+            print("Output" + (" disabled" if is_toggled('0') else " enabled"))
+        if is_toggled('0'):
             throttle = 0
             yaw = 0
 
         # Send control commands to the robot
         puzzlebot.send_vel(throttle, yaw, wait_for_completion=False)
-        
-        # print(vn.identify_stoplight(frame, drawing_frame))
-        # cv2.imshow("Undistorted", vn.undistort_fisheye(frame))
+
+        # Show the frame
         show_frame(drawing_frame, "Puzzlebot Stream")
 
 except KeyboardInterrupt:

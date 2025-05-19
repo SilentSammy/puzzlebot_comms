@@ -330,87 +330,32 @@ def identify_intersection(frame, drawing_frame=None):
     return directions
 
 def identify_stoplight(frame, drawing_frame=None):
-    def find_color_ellipses(mask):
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        ellipses = []
-        for cnt in contours:
-            # 1. Filter out contours with fewer than 5 points.
-            if len(cnt) < 5:
-                continue
-            # 2. Fit an ellipse.
-            ellipse = cv2.fitEllipse(cnt)
-            (center_x, center_y), (axis1, axis2), angle = ellipse
-            # 3. Skip invalid ellipses.
-            if axis1 <= 0 or axis2 <= 0:
-                continue
-            # 4. Create a filled mask for the ellipse.
-            ellipse_mask = np.zeros(mask.shape, dtype=np.uint8)
-            cv2.ellipse(ellipse_mask, ellipse, 255, thickness=-1)
-            # 5. Count pixels in the ellipse that also appear in the original mask.
-            filled = cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=ellipse_mask))
-            # 6. Compute the theoretical ellipse area.
-            ellipse_area = math.pi * (axis1 / 2) * (axis2 / 2)
-            fill_ratio = filled / ellipse_area if ellipse_area > 0 else 0
-            # 7. Accept only if fill ratio is >= assumed threshold.
-            if fill_ratio < 0.85:
-                continue
-            # 8. Filter out ellipses where the minor axis is less than 0.5 of the major axis.
-            if min(axis1, axis2) < 0.5 * max(axis1, axis2):
-                continue
-            # 9. Filter out ellipses with normalized major axis outside desired bounds.
-            norm_major = max(axis1, axis2) / mask.shape[1]
-            if norm_major < 0.02 or norm_major > 0.5:
-                continue
-            ellipses.append(ellipse)
-        return ellipses
+    mask, red_ellipses, yellow_ellipses, green_ellipses = stoplight_mask(frame)
 
-    # Define hsv ranges
-    red = ((0, 100, 100), (10, 255, 255))
-    green = ((40, 100, 100), (80, 255, 255))
-    yellow = ((10, 100, 100), (40, 255, 255))
-
-    # Convert to HSV
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-    # Create masks for each color.
-    red_mask = cv2.inRange(hsv, red[0], red[1])
-    green_mask = cv2.inRange(hsv, green[0], green[1])
-    yellow_mask = cv2.inRange(hsv, yellow[0], yellow[1])
-
-    # Dilate just a bit
-    red_mask = cv2.dilate(red_mask, kernel=np.ones((3, 3), np.uint8), iterations=1)
-    green_mask = cv2.dilate(green_mask, kernel=np.ones((3, 3), np.uint8), iterations=1)
-    yellow_mask = cv2.dilate(yellow_mask, kernel=np.ones((3, 3), np.uint8), iterations=1)
-
-    # Combine masks for displaying purposes.
-    # combined_mask = cv2.addWeighted(red_mask, 1, green_mask, 1, 0)
-    # combined_mask = cv2.addWeighted(combined_mask, 1, yellow_mask, 1, 0)
-    # if drawing_frame is not None:
-    #     combined_mask_color = cv2.cvtColor(combined_mask, cv2.COLOR_GRAY2BGR)
-    #     drawing_frame[:] = combined_mask_color
-
-    # Process each color.
-    red_ellipses = find_color_ellipses(red_mask)
-    green_ellipses = find_color_ellipses(green_mask)
-    yellow_ellipses = find_color_ellipses(yellow_mask)
-
-    # Draw ellipses on the drawing frame.
     if drawing_frame is not None:
+        grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        grayscale = cv2.cvtColor(grayscale, cv2.COLOR_GRAY2BGR)
+        drawing_frame[:] = grayscale
         for ellipse in red_ellipses:
-            cv2.ellipse(drawing_frame, ellipse, (255, 255, 255), 2)
-        for ellipse in green_ellipses:
-            cv2.ellipse(drawing_frame, ellipse, (255, 255, 255), 2)
+            cv2.ellipse(drawing_frame, ellipse, (0, 0, 255), -1)
         for ellipse in yellow_ellipses:
-            cv2.ellipse(drawing_frame, ellipse, (255, 255, 255), 2)
+            cv2.ellipse(drawing_frame, ellipse, (0, 255, 255), -1)
+        for ellipse in green_ellipses:
+            cv2.ellipse(drawing_frame, ellipse, (0, 255, 0), -1)
     
-    if red_ellipses:
-        return 0
-    elif yellow_ellipses:
-        return 1
-    elif green_ellipses:
-        return 2
-    else:
-        return None
+    ellipses = [(0, e) for e in red_ellipses]
+    ellipses.extend([(1, e) for e in yellow_ellipses])
+    ellipses.extend([(2, e) for e in green_ellipses])
+
+    # Get the largest if any
+    def ellipse_key(ellipse):
+        color_code, ((center_x, center_y), (axis1, axis2), angle) = ellipse
+        return axis1
+    ellipses = sorted(ellipses, key=ellipse_key, reverse=True)
+    largest = next(iter(ellipses), None)
+
+    if largest is not None:
+        return largest[0] # 0: red, 1: yellow, 2: green
 
 # NAVIGATION ALGORITHMS (NON-BLOCKING, MUST BE CALLED IN A LOOP)
 def sequence(actions=None, when_done=None, speed_factor=1):
@@ -509,10 +454,10 @@ def follow_line(frame, drawing_frame=None,
 
     # Get and unpck the line
     line = get_middle_line(frame, drawing_frame=drawing_frame)
-    contour, (pt1, pt2, cx, cy, angle, length) = line
 
     throttle, yaw = 0, 0
     if line:
+        contour, (pt1, pt2, cx, cy, angle, length) = line
         # Get the X position of the line in the frame.
         frame_height, frame_width = frame.shape[:2]
         x, y, w, h = cv2.boundingRect(contour)
@@ -524,7 +469,12 @@ def follow_line(frame, drawing_frame=None,
         
         # Decrease throttle as the line moves away from the center.
         alignment = 1 - abs(normalized_x) # 1 when centered, 0 when at the edge.
-        throttle = max_thr * ((alignment - align_thres) / (1 - align_thres))
+        x =  ((alignment - align_thres) / (1 - align_thres)) # From 1 to -1
+        T = 0.7
+        m = 0.5
+        # thr_factor = m * x if x <= T else m * T + m * (x - T) + ((1 - m) / ((1 - T) ** 2)) * (x - T) ** 2
+        thr_factor = x
+        throttle = max_thr * thr_factor
 
         # Optionally draw stats on the frame
         if drawing_frame is not None:
@@ -656,7 +606,7 @@ def waypoint_navigation(frame, drawing_frame=None):
 
     return throttle, yaw
 
-# TESTS
+# LINE FOLLOWING
 def adaptive_thres(frame, drawing_frame=None,
     blur_kernel_size=(7, 7),  # Kernel size for GaussianBlur
     adaptive_method=cv2.ADAPTIVE_THRESH_GAUSSIAN_C,  # Adaptive thresholding method
@@ -672,14 +622,51 @@ def adaptive_thres(frame, drawing_frame=None,
     drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
     return mask
 
+def get_gray_mask(frame, drawing_frame=None,
+                  saturation_thresh=112,
+                  value_thresh=(40, 255)):
+    """
+    Returns a binary mask keeping only near-grayscale pixels.
+    - saturation_thresh: max saturation to be considered gray
+    - value_thresh: (min, max) brightness range
+    If drawing_frame is provided (or defaults to a copy of frame),
+    it will be overwritten with the mask visualized in BGR.
+    """
+    # Prepare drawing_frame
+    drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
+    
+    # Convert and split
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    # Create mask: low saturation + within brightness range
+    lower = (0, 0,       value_thresh[0])
+    upper = (179, saturation_thresh, value_thresh[1])
+    mask = cv2.inRange(hsv, lower, upper)
+    
+    # Visualize mask on drawing_frame
+    drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    
+    return mask
+
+def refined_mask(frame, drawing_frame=None):
+    adaptive_mask = adaptive_thres(frame)
+    gray_mask = get_gray_mask(frame)
+
+    refined_mask = cv2.bitwise_and(adaptive_mask, gray_mask)
+
+    if drawing_frame is not None:
+        drawing_frame[:] = cv2.cvtColor(refined_mask, cv2.COLOR_GRAY2BGR)
+    return refined_mask
+
 def get_line_mask(frame, drawing_frame=None,
     v_fov = 0.4,  # Bottom field of view (0.4 = 40% of the frame height)
     morph_kernel = np.ones((5, 5), np.uint8),  # Kernel for morphological operations
     erode_iterations = 4,  # Number of iterations for erosion
     dilate_iterations = 6,  # Number of iterations for dilation
 ):
-    # Apply adaptive thresholding
+    # Get mask
     mask = adaptive_thres(frame)
+    # mask = refined_mask(frame, drawing_frame=drawing_frame)
 
     # Only keep the lower part of the mask, filling the upper part with black.
     mask[:int(frame.shape[:2][0] * (1-v_fov)), :] = 0
@@ -779,16 +766,180 @@ def get_middle_line(frame, drawing_frame=None):
         # Return the zipped line
         return best_line
 
+# STOPLIGHT DETECTION
+def adaptive_color_thresh(frame, drawing_frame=None,
+                          target_hue=0,
+                          hue_tol=10,
+                          sat_thresh=60,
+                          block_size=255,
+                          c_value=5):
+    """
+    Adaptive + absolute hue threshold.
+      • target_hue in [0–179]
+      • hue_tol = max absolute hue difference (band half-width)
+      • sat_thresh = min saturation
+      • block_size, c_value = adaptiveThreshold-style params, but applied manually
+    
+    Returns mask (uint8) and overwrites drawing_frame with the BGR mask.
+    """
+    # 1) Prepare drawing_frame
+    drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
+
+    # 2) HSV split
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+
+    # 3) Circular hue diff
+    diff = cv2.absdiff(h, np.full_like(h, target_hue))
+    diff = cv2.min(diff, 180 - diff).astype(np.float32)
+
+    # 4) Local mean of diff
+    #    (box filter approximates a sliding-window average)
+    mean_diff = cv2.blur(diff, (block_size, block_size))
+
+    # 5) Build mask: both adaptive AND absolute conditions
+    #    - adaptive: diff ≤ mean_diff − c_value
+    #    - absolute: diff ≤ hue_tol
+    #    - saturation: s ≥ sat_thresh
+    mask = np.zeros_like(h, dtype=np.uint8)
+    cond = (diff <= (mean_diff - c_value)) & (diff <= hue_tol) & (s >= sat_thresh)
+    mask[cond] = 255
+
+    # 6) Overwrite drawing_frame with BGR mask colored by target_hue
+    # Create a color version of the mask using the target hue
+    color_mask = np.zeros_like(frame)
+    # Create an HSV image where H=target_hue, S=255, V=255
+    hsv_color = np.zeros_like(frame)
+    hsv_color[..., 0] = target_hue
+    hsv_color[..., 1] = 255
+    hsv_color[..., 2] = 255
+    bgr_color = cv2.cvtColor(hsv_color, cv2.COLOR_HSV2BGR)
+    # Apply the mask: where mask==255, use the color; else, keep black
+    color_mask[mask == 255] = bgr_color[mask == 255]
+    drawing_frame[:] = color_mask
+
+    return mask
+
+def ellipse_mask(mask, drawing_frame=None,
+    morph_kernel = np.ones((3, 3), np.uint8),       # Kernel for morphological operations
+    erode_iterations = 3,                           # Number of iterations for erosion
+    dilate_iterations = 1,                          # Number of iterations for dilation
+    min_fill_ratio = 0.85,                          # Minimum fill ratio for ellipses
+    max_outside_ratio=None,                         # Maximum allowed outside-area ratio
+    max_tilt = 0.5,                                 # Maximum tilt ratio for ellipses
+    max_norm_major = 0.8,                           # Maximum normalized major axis for ellipses
+    min_norm_major = 0.02,                          # Minimum normalized major axis for ellipses
+    ):
+
+    # Default outside ratio if not specified
+    if max_outside_ratio is None:
+        max_outside_ratio = 1.0 - min_fill_ratio
+
+    # Erode and dilate to remove noise and fill gaps.
+    mask = cv2.erode(mask, kernel=morph_kernel, iterations=erode_iterations)
+    mask = cv2.dilate(mask, kernel=morph_kernel, iterations=dilate_iterations)
+
+    # Find ellipses in the mask
+    contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
+    valid_contours = []
+    ellipses = []
+    valid_mask  = np.zeros_like(mask)
+    for cnt in contours:
+        # 1. Filter out contours with fewer than 5 points.
+        if len(cnt) < 5:
+            continue
+        # 2. Fit an ellipse.
+        ellipse = cv2.fitEllipse(cnt)
+        (center_x, center_y), (axis1, axis2), angle = ellipse
+
+        # 3. Filter out ellipses with extreme aspect ratios.
+        if min(axis1, axis2) < max_tilt * max(axis1, axis2):
+            continue
+        
+        # 4. Filter out ellipses too small or too large.
+        norm_major = max(axis1, axis2) / mask.shape[1]
+        if norm_major < min_norm_major or norm_major > max_norm_major:
+            continue
+
+        # 5. Accept only if fill ratio is >= assumed threshold.
+        ellipse_mask = np.zeros(mask.shape, dtype=np.uint8)
+        cv2.ellipse(ellipse_mask, ellipse, 255, thickness=-1)
+        filled = cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=ellipse_mask))
+        ellipse_area = math.pi * (axis1 / 2) * (axis2 / 2)
+        fill_ratio = filled / ellipse_area if ellipse_area > 0 else 0
+        if fill_ratio < min_fill_ratio:
+            continue
+
+        # 6. Outside-area ratio filter
+        outside_mask = cv2.bitwise_and(mask, mask, mask=cv2.bitwise_not(ellipse_mask))
+        outside_count = cv2.countNonZero(outside_mask)
+        outside_ratio = outside_count / ellipse_area
+        if outside_ratio > max_outside_ratio:
+            continue
+
+        # Record the ellipse and the contour
+        valid_mask = cv2.bitwise_or(valid_mask, ellipse_mask)
+        ellipses.append(ellipse)
+        valid_contours.append(cnt)
+    
+    if drawing_frame is not None:
+        drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        for ellipse in ellipses:
+            cv2.ellipse(drawing_frame, ellipse, (255, 0, 0), 2)
+
+    return valid_mask, ellipses
+
+def stoplight_mask(frame, drawing_frame=None):
+    red_mask = adaptive_color_thresh( frame )
+    yellow_mask = adaptive_color_thresh( frame, target_hue=30, hue_tol=12, sat_thresh=80 )
+    green_mask = adaptive_color_thresh( frame, target_hue=65, hue_tol=20, sat_thresh=30 )
+
+    red_mask, red_ellipses = ellipse_mask( red_mask )
+    green_mask, green_ellipses = ellipse_mask( green_mask )
+    yellow_mask, yellow_ellipses = ellipse_mask( yellow_mask )
+
+    # AND all the masks together
+    stoplight_mask = cv2.bitwise_or(red_mask, green_mask)
+    stoplight_mask = cv2.bitwise_or(stoplight_mask, yellow_mask)
+
+    # Overwrite the drawing frame with the mask for debugging.
+    if drawing_frame is not None:
+        # create a blank color image
+        colored = np.zeros_like(frame)
+        # apply color per mask
+        colored[red_mask > 0]    = (0,   0,   255)  # BGR red
+        colored[yellow_mask > 0] = (0,   255, 255)  # BGR yellow
+        colored[green_mask > 0]  = (0,   255, 0)    # BGR green
+        drawing_frame[:] = colored
+    return stoplight_mask, red_ellipses, yellow_ellipses, green_ellipses
+
 line_detection_pipeline = [
     ("adaptive_thres", lambda: adaptive_thres(frame, drawing_frame)),
+    ("gray_mask", lambda: get_gray_mask(frame, drawing_frame)),
+    ("refined_mask", lambda: refined_mask(frame, drawing_frame)),
     ("line_mask", lambda: get_line_mask(frame, drawing_frame)),
     ("line_candidates", lambda: get_line_candidates(frame, drawing_frame)),
     ("middle_line", lambda: get_middle_line(frame, drawing_frame)),
     ("follow_line", lambda: follow_line(frame, drawing_frame)),
 ]
 
+stoplight_pipeline = [
+    ("red", lambda: adaptive_color_thresh( frame, drawing_frame )),
+    ("yellow", lambda: adaptive_color_thresh( frame, drawing_frame=drawing_frame, target_hue=30, hue_tol=12, sat_thresh=80 )),
+    ("green", lambda: adaptive_color_thresh( frame, drawing_frame=drawing_frame, target_hue=65, hue_tol=20, sat_thresh=30 )),
+
+    ("red_ellipses", lambda: ellipse_mask( adaptive_color_thresh( frame ), drawing_frame=drawing_frame )),
+    ("yellow_ellipses", lambda: ellipse_mask( adaptive_color_thresh( frame, target_hue=30, hue_tol=12, sat_thresh=80 ), drawing_frame=drawing_frame,  )),
+    ("green_ellipses", lambda: ellipse_mask( adaptive_color_thresh( frame, target_hue=65, hue_tol=20, sat_thresh=30 ), drawing_frame=drawing_frame )),
+
+    ("stoplight_mask", lambda: stoplight_mask( frame, drawing_frame=drawing_frame )),
+    ("identify_stoplight", lambda: print(identify_stoplight( frame, drawing_frame=drawing_frame ))),
+]
+
+
 if __name__ == "__main__":
-    vp = VideoPlayer(r"resources/videos/track2.mp4")  # Path to the video file
+    vp = VideoPlayer(r"resources/videos/track3.mp4")  # Path to the video file
+    # vp = VideoPlayer(r"resources\screenshots\stoplight")  # Path to the image folder
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
@@ -813,6 +964,7 @@ if __name__ == "__main__":
                 layer = i
                 break
         
+        pipeline = stoplight_pipeline
         pipeline = line_detection_pipeline
 
         # Choose the layer to show. Layer 1 is do nothing. Layer 2 is index 0 in the pipeline, etc.
