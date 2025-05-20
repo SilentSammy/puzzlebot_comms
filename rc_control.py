@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import math
 import cv2
@@ -12,8 +13,8 @@ from simple_pid import PID
 import visual_navigation as vn
 
 # Connection
-# puzzlebot = PuzzlebotHttpClient("http://192.168.137.10:5000", safe_mode=True)
-puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
+puzzlebot = PuzzlebotHttpClient("http://192.168.137.9:5000", safe_mode=True)
+# puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
 
 # Maximum values for throttle and yaw
 max_yaw = math.radians(180)
@@ -120,6 +121,39 @@ def screenshot(frame):
     # Increment the count
     screenshot.count += 1
 
+def record(frame):
+    """
+    If frame is a valid image (numpy array), write it to the video file.
+    If frame is None, release the VideoWriter if it exists.
+    """
+    # Close the video if frame is None
+    if frame is None:
+        if hasattr(record, "vw"):
+            record.vw.release()
+            print("Video recording closed.")
+            del record.vw
+        return
+
+    # If VideoWriter hasn't been created yet, initialize it now
+    if not hasattr(record, "vw"):
+        fps = 30  # desired frame rate
+        height, width = frame.shape[:2]
+        
+        # Create a directory for video output if needed
+        record.dir_path = record.dir_path if hasattr(record, "dir_path") else "./resources/videos"
+        os.makedirs(record.dir_path, exist_ok=True)
+        
+        # Create a timestamped file name 
+        filename = os.path.join(record.dir_path, time.strftime("output_%Y-%m-%d_%H-%M-%S.mp4"))
+        
+        # Choose a codec that works well (e.g., 'mp4v')
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')
+        record.vw = cv2.VideoWriter(filename, fourcc, fps, (width, height))
+        print(f"Video recording started: {filename}")
+    
+    # Append the frame to the video file
+    record.vw.write(frame)
+
 nav_mode = 1
 try:
     while True:
@@ -129,9 +163,10 @@ try:
         drawing_frame = frame.copy()
         throttle, yaw = 0, 0
 
-        # Optional screenshot
-        if rising_edge('p') or is_toggled('o'):
+        # Optional screenshot or recording
+        if rising_edge('p'):
             screenshot(frame)
+        record(frame if is_toggled('o') else None)
 
         # Safe mode selection
         if rising_edge('z', 'Y'):
@@ -164,7 +199,7 @@ try:
         elif nav_mode == 3:
             throttle, yaw = vn.waypoint_navigation(frame, drawing_frame)
         elif nav_mode == 4:
-            throttle, yaw = vn.follow_line(frame, drawing_frame, max_thr=0.2, align_thres=0.3)
+            throttle, yaw = vn.follow_line(frame, drawing_frame, max_thr=0.25, align_thres=0.2)
         elif nav_mode == 5:
             throttle, yaw = vn.sequence(speed_factor=2)
         
@@ -189,5 +224,6 @@ try:
 except KeyboardInterrupt:
     print("Exiting...")
 finally:
+    puzzlebot.send_vel(0, 0)
     puzzlebot._stop_stream()
     cv2.destroyAllWindows()

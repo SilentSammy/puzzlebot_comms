@@ -6,13 +6,14 @@ import cv2
 app = Flask(__name__)
 http_endpoints = {}
 video_endpoints = {}
+port = 5000
 
 def start_webserver(threaded=True):
     if threaded:
         server_thread = threading.Thread(
             target=lambda: app.run(
                 host='0.0.0.0',
-                port=5000,
+                port=port,
                 debug=True,
                 use_reloader=False,
                 threaded=True
@@ -23,7 +24,7 @@ def start_webserver(threaded=True):
     else:
         app.run(
             host='0.0.0.0',
-            port=5000,
+            port=port,
             debug=True,
             use_reloader=False,
             threaded=True

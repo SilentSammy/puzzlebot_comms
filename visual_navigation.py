@@ -106,13 +106,13 @@ K = np.array([
 D = np.array([-0.02983132, -0.02312677, 0.03447185, -0.02105932], dtype=np.float64)
 
 # VISION HELPERS
-def undistort_fisheye(img, zoom=True):
+def undistort_fisheye(frame, drawing_frame=None, zoom=True):
     """
     Undistort a fisheye image.
     If zoom=False, also returns a mask (uint8) where
     valid pixels==1 and border fill==0.
     """
-    h, w = img.shape[:2]
+    h, w = frame.shape[:2]
     
     # choose balance & borderMode
     if zoom:
@@ -128,10 +128,14 @@ def undistort_fisheye(img, zoom=True):
         K, D, np.eye(3), new_K, (w, h), cv2.CV_16SC2
     )
     undistorted = cv2.remap(
-        img, map1, map2,
+        frame, map1, map2,
         interpolation=cv2.INTER_LINEAR,
         borderMode=borderMode
     )
+
+    # Overwrite the drawing frame with the undistorted image
+    if drawing_frame is not None:
+        drawing_frame[:] = undistorted
 
     # if zoom=False, build & return a valid-pixel mask
     if not zoom:
@@ -607,6 +611,29 @@ def waypoint_navigation(frame, drawing_frame=None):
     return throttle, yaw
 
 # LINE FOLLOWING
+def get_contour_line_info(c, fix_vert=True):
+    # Fit a line to the contour
+    vx, vy, cx, cy = cv2.fitLine(c, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
+    
+    # Project contour points onto the line's direction vector.
+    projections = [((pt[0][0] - cx) * vx + (pt[0][1] - cy) * vy) for pt in c]
+    min_proj = min(projections)
+    max_proj = max(projections)
+    
+    # Compute endpoints from the extreme projection values.
+    pt1 = (int(cx + vx * min_proj), int(cy + vy * min_proj))
+    pt2 = (int(cx + vx * max_proj), int(cy + vy * max_proj))
+    
+    # Calculate the line angle in degrees.
+    angle = math.degrees(math.atan2(vy, vx))
+    if fix_vert:
+        angle = angle - 90 * np.sign(angle)
+    
+    # Calculate the line length given pt1 and pt2.
+    length = math.hypot(pt2[0] - pt1[0], pt2[1] - pt1[1])
+    
+    return pt1, pt2, angle, cx, cy, length
+
 def adaptive_thres(frame, drawing_frame=None,
     blur_kernel_size=(7, 7),  # Kernel size for GaussianBlur
     adaptive_method=cv2.ADAPTIVE_THRESH_GAUSSIAN_C,  # Adaptive thresholding method
@@ -684,30 +711,6 @@ def get_line_candidates(frame, drawing_frame=None,
     min_area=2000,
     min_length=90,
 ):
-    # Helper function to get line-related info from a contour
-    def get_contour_line_info(c, fix_vert=True):
-        # Fit a line to the contour
-        vx, vy, cx, cy = cv2.fitLine(c, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
-        
-        # Project contour points onto the line's direction vector.
-        projections = [((pt[0][0] - cx) * vx + (pt[0][1] - cy) * vy) for pt in c]
-        min_proj = min(projections)
-        max_proj = max(projections)
-        
-        # Compute endpoints from the extreme projection values.
-        pt1 = (int(cx + vx * min_proj), int(cy + vy * min_proj))
-        pt2 = (int(cx + vx * max_proj), int(cy + vy * max_proj))
-        
-        # Calculate the line angle in degrees.
-        angle = math.degrees(math.atan2(vy, vx))
-        if fix_vert:
-            angle = angle - 90 * np.sign(angle)
-        
-        # Calculate the line length given pt1 and pt2.
-        length = math.hypot(pt2[0] - pt1[0], pt2[1] - pt1[1])
-        
-        return pt1, pt2, angle, cx, cy, length
-
     mask = get_line_mask(frame)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contours = [c for c in contours if cv2.contourArea(c) > min_area]
@@ -822,22 +825,21 @@ def adaptive_color_thresh(frame, drawing_frame=None,
 
 def ellipse_mask(mask, drawing_frame=None,
     morph_kernel = np.ones((3, 3), np.uint8),       # Kernel for morphological operations
-    erode_iterations = 3,                           # Number of iterations for erosion
-    dilate_iterations = 1,                          # Number of iterations for dilation
-    min_fill_ratio = 0.85,                          # Minimum fill ratio for ellipses
-    max_outside_ratio=None,                         # Maximum allowed outside-area ratio
+    erode_iterations = 1,                           # Number of iterations for erosion
+    dilate_iterations = 0,                          # Number of iterations for dilation
+    min_fill_ratio = 0.75,                          # Minimum fill ratio for ellipses
+    max_outside_ratio=None,                          # Maximum allowed outside-area ratio
     max_tilt = 0.5,                                 # Maximum tilt ratio for ellipses
     max_norm_major = 0.8,                           # Maximum normalized major axis for ellipses
-    min_norm_major = 0.02,                          # Minimum normalized major axis for ellipses
+    min_norm_major = 0.01,                          # Minimum normalized major axis for ellipses
     ):
-
-    # Default outside ratio if not specified
-    if max_outside_ratio is None:
-        max_outside_ratio = 1.0 - min_fill_ratio
 
     # Erode and dilate to remove noise and fill gaps.
     mask = cv2.erode(mask, kernel=morph_kernel, iterations=erode_iterations)
     mask = cv2.dilate(mask, kernel=morph_kernel, iterations=dilate_iterations)
+
+    if drawing_frame is not None:
+        drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
 
     # Find ellipses in the mask
     contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
@@ -847,35 +849,44 @@ def ellipse_mask(mask, drawing_frame=None,
     for cnt in contours:
         # 1. Filter out contours with fewer than 5 points.
         if len(cnt) < 5:
+            cv2.drawContours(drawing_frame, [cnt], -1, (0, 0, 255), 1)  # Draw contour in red
             continue
         # 2. Fit an ellipse.
         ellipse = cv2.fitEllipse(cnt)
         (center_x, center_y), (axis1, axis2), angle = ellipse
 
+        # 2.1 Skip invalid ellipses
+        if axis1 <= 0 or axis2 <= 0:
+            continue
+
         # 3. Filter out ellipses with extreme aspect ratios.
         if min(axis1, axis2) < max_tilt * max(axis1, axis2):
+            cv2.drawContours(drawing_frame, [cnt], -1, (255, 0, 255), 1)  # Draw contour in magenta
             continue
-        
+
         # 4. Filter out ellipses too small or too large.
         norm_major = max(axis1, axis2) / mask.shape[1]
         if norm_major < min_norm_major or norm_major > max_norm_major:
+            cv2.drawContours(drawing_frame, [cnt], -1, (0, 255, 255), 1)  # Draw contour in cyan
             continue
 
         # 5. Accept only if fill ratio is >= assumed threshold.
         ellipse_mask = np.zeros(mask.shape, dtype=np.uint8)
-        cv2.ellipse(ellipse_mask, ellipse, 255, thickness=-1)
         filled = cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=ellipse_mask))
         ellipse_area = math.pi * (axis1 / 2) * (axis2 / 2)
         fill_ratio = filled / ellipse_area if ellipse_area > 0 else 0
         if fill_ratio < min_fill_ratio:
+            cv2.drawContours(drawing_frame, [cnt], -1, (0, 255, 255), 1)  # Draw contour in yellow
             continue
 
         # 6. Outside-area ratio filter
-        outside_mask = cv2.bitwise_and(mask, mask, mask=cv2.bitwise_not(ellipse_mask))
-        outside_count = cv2.countNonZero(outside_mask)
-        outside_ratio = outside_count / ellipse_area
-        if outside_ratio > max_outside_ratio:
-            continue
+        if max_outside_ratio is not None:
+            outside_mask = cv2.bitwise_and(mask, mask, mask=cv2.bitwise_not(ellipse_mask))
+            outside_count = cv2.countNonZero(outside_mask)
+            outside_ratio = outside_count / ellipse_area
+            if outside_ratio > max_outside_ratio:
+                cv2.drawContours(drawing_frame, [cnt], -1, (255, 0, 0), 2)  # Draw contour in blue
+                continue
 
         # Record the ellipse and the contour
         valid_mask = cv2.bitwise_or(valid_mask, ellipse_mask)
@@ -883,9 +894,8 @@ def ellipse_mask(mask, drawing_frame=None,
         valid_contours.append(cnt)
     
     if drawing_frame is not None:
-        drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-        for ellipse in ellipses:
-            cv2.ellipse(drawing_frame, ellipse, (255, 0, 0), 2)
+        for ellipse in ellipses: # Draw valid ellipses in green
+            cv2.ellipse(drawing_frame, ellipse, (0, 255, 0), 2)
 
     return valid_mask, ellipses
 
@@ -913,10 +923,76 @@ def stoplight_mask(frame, drawing_frame=None):
         drawing_frame[:] = colored
     return stoplight_mask, red_ellipses, yellow_ellipses, green_ellipses
 
+# INTERSECTION DETECTION
+def get_dark_mask(frame, drawing_frame=None,
+    undistort=True,
+    morph_kernel = np.ones((3, 3), np.uint8),  # Kernel for morphological operations
+    erode_iterations = 4,  # Number of iterations for erosion
+    dilate_iterations = 2,  # Number of iterations for dilation
+):
+    valid_mask = None
+    if undistort:
+        frame, valid_mask = undistort_fisheye(frame, zoom=False)
+    
+    mask = adaptive_thres(frame)
+
+    if valid_mask is not None:
+        mask = cv2.bitwise_and(mask, mask, mask=valid_mask)
+
+    # Erode and dilate to remove noise and fill gaps.
+    mask = cv2.erode(mask, kernel=morph_kernel, iterations=erode_iterations)
+    mask = cv2.dilate(mask, kernel=morph_kernel, iterations=dilate_iterations)
+
+    if drawing_frame is not None: # Overwrite the drawing frame with the mask for debugging.
+        drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+
+    return mask
+
+def find_dots(frame, drawing_frame=None,
+    max_aspect_ratio = 10.0,
+    min_area = 20,
+    ep = 0.07, # Approximation factor for contour approximation
+):
+    mask = get_dark_mask(frame)
+    
+    if drawing_frame is not None:
+        drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+
+    # Find quadrilateral contours in the mask with sufficient area
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours = [c for c in contours if cv2.contourArea(c) > min_area]
+    dots = []
+    
+    # Maximum allowed aspect ratio (long side divided by short side)
+    for cnt in contours:
+        # Approximate the contour to a polygon
+        epsilon = ep * cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, epsilon, True)
+
+        # Check if the approximated contour has 4 points (quadrilateral) and is convex.
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            x, y, w, h = cv2.boundingRect(approx)
+            # Filter out quadrilaterals that are too elongated
+            if min(w, h) == 0 or max(w, h) / min(w, h) > max_aspect_ratio:
+                continue
+            # center = (x + w // 2, y + h // 2)
+            pt1, pt2, angle, cx, cy, length = get_contour_line_info(approx, fix_vert=False)
+            dots.append(center)
+            center = (int(cx), int(cy))
+            line = ((pt1[0], pt1[1]), (pt2[0], pt2[1]))
+            # Optionally, draw the detected dot on the image
+            cv2.circle(drawing_frame, center, 5, (0, 0, 255), -1)
+            cv2.polylines(drawing_frame, [approx], True, (0, 255, 0), 2)
+        else:
+            cv2.polylines(drawing_frame, [approx], True, (255, 0, 0), 2)
+
+    return mask
+    
+
 line_detection_pipeline = [
     ("adaptive_thres", lambda: adaptive_thres(frame, drawing_frame)),
-    ("gray_mask", lambda: get_gray_mask(frame, drawing_frame)),
-    ("refined_mask", lambda: refined_mask(frame, drawing_frame)),
+    # ("gray_mask", lambda: get_gray_mask(frame, drawing_frame)),
+    # ("refined_mask", lambda: refined_mask(frame, drawing_frame)),
     ("line_mask", lambda: get_line_mask(frame, drawing_frame)),
     ("line_candidates", lambda: get_line_candidates(frame, drawing_frame)),
     ("middle_line", lambda: get_middle_line(frame, drawing_frame)),
@@ -936,9 +1012,15 @@ stoplight_pipeline = [
     ("identify_stoplight", lambda: print(identify_stoplight( frame, drawing_frame=drawing_frame ))),
 ]
 
+intersection_pipeline = [
+    ("undistort", lambda: undistort_fisheye(frame, drawing_frame=drawing_frame, zoom=False)),
+    ("dark_mask", lambda: get_dark_mask(frame, drawing_frame=drawing_frame)),
+    ("mask_intersection", lambda: find_dots(frame, drawing_frame=drawing_frame)),
+    
+]
 
 if __name__ == "__main__":
-    vp = VideoPlayer(r"resources/videos/track3.mp4")  # Path to the video file
+    vp = VideoPlayer(r"resources/videos/track1.mp4")  # Path to the video file
     # vp = VideoPlayer(r"resources\screenshots\stoplight")  # Path to the image folder
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
@@ -966,6 +1048,7 @@ if __name__ == "__main__":
         
         pipeline = stoplight_pipeline
         pipeline = line_detection_pipeline
+        pipeline = intersection_pipeline
 
         # Choose the layer to show. Layer 1 is do nothing. Layer 2 is index 0 in the pipeline, etc.
         if layer >= 2 and layer <= len(pipeline) + 1:
@@ -975,8 +1058,7 @@ if __name__ == "__main__":
 
         print()
     
-        if re('p'):
-            # Save the current frame as an image.
+        if re('p'): # Save the current frame as an image.
             output_file = f"frame_{vp.frame_idx}_layer_{layer}.png"
             cv2.imwrite(output_file, drawing_frame)
             print(f"Saved frame {vp.frame_idx} as {output_file}")

@@ -7,7 +7,7 @@ import json
 import threading
 import time
 from rclpy.qos import qos_profile_sensor_data
-from http_bridge import web
+from pb_http_server import web
 
 class RCServerNode(Node):
     def __init__(self):
