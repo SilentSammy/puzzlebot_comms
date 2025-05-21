@@ -13,7 +13,8 @@ from simple_pid import PID
 import visual_navigation as vn
 
 # Connection
-puzzlebot = PuzzlebotHttpClient("http://192.168.137.9:5000", safe_mode=True)
+puzzlebot = PuzzlebotHttpClient("http://192.168.43.125:5000", safe_mode=True)
+# puzzlebot = PuzzlebotHttpClient("http://192.168.137.202:5000", safe_mode=True)
 # puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
 
 # Maximum values for throttle and yaw
@@ -179,29 +180,16 @@ try:
             print("Control mode: Manual")
         elif rising_edge('2', 'A'):
             nav_mode = 2
-            print("Control mode: Navigate track")
-        elif rising_edge('3', 'B'):
+            print("Control mode: Follow line with signs")
+        elif rising_edge('3'):
             nav_mode = 3
-            print("Control mode: Waypoint navigation")
-        elif rising_edge('4'):
-            nav_mode = 4
             print("Control mode: Follow line")
-        elif rising_edge('5'):
-            nav_mode = 5
-            print("Control mode: Preprogrammed sequence")
-        elif rising_edge('6'):
-            nav_mode = 6
-            print("Testing mode")
         
         # Control
         if nav_mode == 2:
-            throttle, yaw = vn.navigate_track(frame, drawing_frame, lambda i: choose_direction(i, drawing_frame, -1))
+            throttle, yaw = vn.follow_line_w_signs(frame, drawing_frame)
         elif nav_mode == 3:
-            throttle, yaw = vn.waypoint_navigation(frame, drawing_frame)
-        elif nav_mode == 4:
             throttle, yaw = vn.follow_line(frame, drawing_frame, max_thr=0.225, align_thres=0.2)
-        elif nav_mode == 5:
-            throttle, yaw = vn.sequence(speed_factor=2)
         
         # Always allow manual control
         thr, yw = manual_control()

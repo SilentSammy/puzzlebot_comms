@@ -1,12 +1,9 @@
-import sys
 import os
-sys.path[:0] = [os.path.abspath(os.path.join(os.path.dirname(__file__), p)) for p in ('..', '../..')]
 from simple_pid import PID
 import numpy as np
 import math
 import cv2
 import time
-import pose_estimation as pe
 import keybrd
 from collections import deque
 
@@ -336,7 +333,7 @@ def ellipse_mask(mask, drawing_frame=None,
     erode_iterations = 3,                           # Number of iterations for erosion
     dilate_iterations = 2,                          # Number of iterations for dilation
     min_fill_ratio = 0.88,                          # Minimum fill ratio for ellipses
-    max_outside_ratio=0.05,                          # Maximum allowed outside-area ratio
+    max_outside_ratio=0.12,                          # Maximum allowed outside-area ratio
     max_tilt = 0.5,                                 # Maximum tilt ratio for ellipses
     max_norm_major = 0.8,                           # Maximum normalized major axis for ellipses
     min_norm_major = 0.025,                          # Minimum normalized major axis for ellipses
@@ -440,9 +437,10 @@ def stoplight_mask(frame, drawing_frame=None):
     return stoplight_mask, red_ellipses, yellow_ellipses, green_ellipses
 
 def identify_stoplight(frame, drawing_frame=None,
-    edge_thres_x=0.2, # Fraction of the frame width
+    edge_thres_x=0.3, # Fraction of the frame width
     edge_thres_y=0.0, # Fraction of the frame height
-    chain_length=3,   # Consecutive frames to consider a color as seen
+    chain_length=4,   # Consecutive frames to consider a color as seen
+    max_chain_gap=1,  # Maximum gap in frames to consider a color as seen
 ):
     def is_near_edge(ellipse):
         # Unpack the ellipse: ((x, y), (a, b), angle)
@@ -469,15 +467,38 @@ def identify_stoplight(frame, drawing_frame=None,
         color_code, ((center_x, center_y), (axis1, axis2), angle) = color_coded_ellipse
         return axis1
 
-    def check_latest_colors(chain_length):
-        # Only check if you have at least chain_length entries.
+    def check_latest_colors():
         if len(identify_stoplight.latest_colors) < chain_length:
             return None
-        # Get the last chain_length elements.
-        tail = list(identify_stoplight.latest_colors)[-chain_length:]
-        # If all values in tail are the same (and not None) return that value.
-        if tail[0] is not None and all(color == tail[0] for color in tail):
-            return tail[0]
+
+        latest = list(identify_stoplight.latest_colors)
+        count_valid = 0     # count of valid (non-None) frames of the candidate color
+        gap_count = 0       # count of consecutive None frames
+        candidate = None
+
+        # Process from the newest to older frames
+        for color in reversed(latest):
+            if color is None:
+                gap_count += 1
+                # If gaps exceed allowed, break out.
+                if gap_count > max_chain_gap:
+                    break
+            else:
+                if candidate is None:
+                    candidate = color  # first valid color establishes our candidate
+                    count_valid = 1
+                elif color == candidate:
+                    count_valid += 1
+                else:
+                    # a different valid color disrupts the chain
+                    break
+
+            # Check if we've seen at least the required total frames
+            if (count_valid + gap_count) >= chain_length:
+                # Only accept candidate if valid frames are sufficient
+                if count_valid >= (chain_length - max_chain_gap):
+                    return candidate
+
         return None
 
     # Static variables
@@ -499,7 +520,8 @@ def identify_stoplight(frame, drawing_frame=None,
     # Filter out only red ellipses that are near the edge of the frame
     red_ellipses_fltrd = [e for e in red_ellipses if not is_near_edge(e)]
     if len(red_ellipses_fltrd) != len(red_ellipses):
-        print("Some red ellipses are near the edge of the frame. Ignoring them.")
+        # print("Some red ellipses are near the edge of the frame. Ignoring them.")
+        pass
 
     ellipses = [(0, e) for e in red_ellipses_fltrd]
     ellipses.extend([(1, e) for e in yellow_ellipses])
@@ -511,8 +533,8 @@ def identify_stoplight(frame, drawing_frame=None,
 
     seen_color = largest[0] if largest is not None else None
     identify_stoplight.latest_colors.append(seen_color)
-    confirmed_color = check_latest_colors(chain_length)
-    print(f"Seen: {seen_color}, Confirmed: {confirmed_color}")
+    confirmed_color = check_latest_colors()
+    # print(f"Seen: {seen_color}, Confirmed: {confirmed_color}")
 
     return confirmed_color
 
@@ -760,6 +782,66 @@ def identify_intersection(frame, drawing_frame=None):
         cv2.fillPoly(drawing_frame, [np.array([center, pt1, pt2], np.int32)], (0, 255, 0)) # Draw the triangle as a filled polygon
     return directions
 
+# CHECKERBOARD VISION STAGES
+def get_checkerboard_corners(frame, drawing_frame=None, 
+    pattern_size = (4, 3), # Number of inner corners per a chessboard row and column
+):
+    """Detects inner corners of a checkerboard."""
+    frame = undistort_fisheye(frame, zoom=False)[0]
+    if drawing_frame is not None:
+        # Overwrite the drawing frame with the undistorted frame for debugging.
+        drawing_frame[:] = frame.copy()
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    ret, corners = cv2.findChessboardCorners(gray, pattern_size, None)
+    if ret and drawing_frame is not None:
+        cv2.drawChessboardCorners(drawing_frame, pattern_size, corners, ret)
+    return corners if ret else None
+
+def estimate_distance_from_height(frame, drawing_frame=None,
+    pattern_size=(4, 3),
+    square_size=0.025,
+):
+    """
+    Estima Z (m) usando solo la altura en píxeles del patrón.
+    Devuelve (Z, h_pix).
+    """
+    corners = get_checkerboard_corners(frame, drawing_frame=drawing_frame, pattern_size=pattern_size)
+    if corners is None:
+        return None, None
+    f_y = K[1,1]
+    ys = corners[:,:,1].flatten()
+    h_pix = ys.max() - ys.min()
+    # Altura real entre la primer y última fila de esquinas internas
+    H_real = square_size * (pattern_size[1] - 1)
+    Z = (f_y * H_real) / h_pix
+    if drawing_frame is not None:
+        cv2.putText(drawing_frame, f"Z: {Z:.2f} m", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(drawing_frame, f"h_pix: {h_pix:.2f}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+    return Z, h_pix
+
+def is_flag_at_distance(frame, drawing_frame,
+    pattern_size = (4, 3),
+    square_size = 0.025,
+    threshold=0.4
+):
+    Z, _ = estimate_distance_from_height(frame, drawing_frame=drawing_frame, pattern_size=pattern_size, square_size=square_size)
+    if Z is None:
+        return False
+    reached = Z <= threshold
+    if drawing_frame is not None and reached:
+        # Get frame dimensions
+        h, w = drawing_frame.shape[:2]
+        # Calculate position for centered text
+        text = f"Flag reached!"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 1
+        thickness = 2
+        (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+        x = (w - text_width) // 2
+        y = (h + text_height) // 2
+        cv2.putText(drawing_frame, text, (x, y), font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
+    return reached
+
 # END NAVIGATION ALGORITHMS (THESE RETURN THROTTLE AND YAW) (NON-BLOCKING, MUST BE CALLED IN A LOOP)
 def sequence(actions=None, when_done=None, speed_factor=1):
     """ Execute a sequence of actions. Each action is a tuple (v, w, t) """
@@ -851,113 +933,33 @@ def follow_line(frame, drawing_frame=None,
     return throttle, yaw  # Comment this line to disable output
     return 0, 0
 
-def navigate_track(frame, drawing_frame=None, decision_func=None):
-    def random_decision(intersection):
-        avail_idxs = [i for i, d in enumerate(intersection) if d is not None and i != 0]
-        chosen_idx = np.random.choice(avail_idxs)
-        dir_labels = ["back", "left", "right", "front"]
-        print(f"Available directions: {[dir_labels[i] for i in avail_idxs]}; Going: {dir_labels[chosen_idx]}")
-        return chosen_idx
-
-    # Define sequences of actions (v, w, t)
-    backward = [ (0, math.radians(30), 6) ]
-    turn_left = [
-        (0.15, 0, 2), # Move 30cm forward
-        (0, math.radians(30), 3), # left 90° turn
-        (0.15, 0, 2), # Move 30cm forward
-    ]
-    turn_right = [
-        (0.15, 0, 2), # Move 30cm forward
-        (0, -math.radians(30), 3), # right 90° turn
-        (0.15, 0, 2), # Move 30cm forward
-    ]
-    forward = [ (0.15, 0, 4) ]
-    actions = [backward, turn_left, turn_right, forward]
-    decision_func = decision_func or random_decision
-
+def follow_line_w_signs(frame, drawing_frame=None):
     # Static variables
-    navigate_track.tmr = navigate_track.tmr if hasattr(navigate_track, "tmr") else 0
-    navigate_track.action_index = navigate_track.action_index if hasattr(navigate_track, "action_index") else -1
-    navigate_track.stoplight = navigate_track.stoplight if hasattr(navigate_track, "stoplight") else 2
+    follow_line_w_signs.tmr = follow_line_w_signs.tmr if hasattr(follow_line_w_signs, "tmr") else 0
+    follow_line_w_signs.action_index = follow_line_w_signs.action_index if hasattr(follow_line_w_signs, "action_index") else -1
+    follow_line_w_signs.stoplight = follow_line_w_signs.stoplight if hasattr(follow_line_w_signs, "stoplight") else 2
+    follow_line_w_signs.end_reached = follow_line_w_signs.end_reached if hasattr(follow_line_w_signs, "end_reached") else False
 
-    # If an action is in progress execute it.
-    if navigate_track.action_index != -1:
-        def reset_action():
-            navigate_track.action_index = -1
-        thr, yaw = sequence(actions=actions[navigate_track.action_index], when_done=reset_action)
+    # Check if the flag has been reached
+    flag_is_close = is_flag_at_distance(frame, drawing_frame=drawing_frame)
+    if not follow_line_w_signs.end_reached:
+        follow_line_w_signs.end_reached = flag_is_close
+    print(f"Flag reached: {follow_line_w_signs.end_reached}")
+
+    # # Determine the speed factor based on the stoplight.
+    # stoplight = identify_stoplight(frame, drawing_frame=drawing_frame)
+    # if stoplight is not None and stoplight != 1: # If red or green, remember it
+    #     follow_line_w_signs.stoplight = stoplight
+    # speed_factor = (stoplight or follow_line_w_signs.stoplight) * 0.5
+    speed_factor = 1.0
+
+    thr, yaw = follow_line(frame, drawing_frame=drawing_frame)
+    thr *= speed_factor
+    yaw *= speed_factor
+    if not follow_line_w_signs.end_reached:
         return thr, yaw
-
-    # Determine the speed factor based on the stoplight.
-    stoplight = identify_stoplight(frame, drawing_frame=drawing_frame)
-    if stoplight is not None and stoplight != 1: # If red or green, remember it
-        navigate_track.stoplight = stoplight
-    speed_factor = (stoplight or navigate_track.stoplight) * 0.5
-
-    # Attempt to identify an intersection.
-    # intersection = identify_intersection(frame, drawing_frame=drawing_frame)
-    intersection = [None, None, None, None]
-
-    # Are we close enough to the intersection?
-    inter_hor = intersection[0] or intersection[3] if intersection else None
-    inter_hor_y = inter_hor[1][1] / frame.shape[0] if inter_hor else 0
-    close_enough = inter_hor_y >= (1 - 0.4)
-
-    if close_enough: # If the robot is close to the intersection, stop and choose a random direction.
-        thr, yaw = stop_at_intersection(frame=frame, drawing_frame=drawing_frame, intersection=intersection) # Passing the detected intersection to avoid double processing.
-        
-        # Wait for the robot to stabilize and for the stoplight to be green.
-        if not (abs(thr) < 0.02 and abs(thr) < 0.02) or speed_factor != 1:
-            navigate_track.tmr = time.time() # Reset the timer (keep waiting)
-        
-        # If the robot has been stable for 2 seconds choose a random index from the available directions
-        if time.time() - navigate_track.tmr > 1:
-            navigate_track.action_index = decision_func(intersection) # Poll the decision function
-
-    else: # No intersection detected, so we should follow the line.
-        thr, yaw = follow_line(frame, drawing_frame=drawing_frame)
-        navigate_track.tmr = time.time() # Reset the timer
-        thr *= speed_factor
-    return thr, yaw
-
-def navigate_to_aruco(frame, drawing_frame=None):
-    """ Navigate to the closest ArUco marker. """
-
-    drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
-    # Static variables
-    max_yaw = math.radians(30)
-    max_thr = 0.2
-    yaw_threshold = 5.0  # The robot will start moving forward when the target is this many degrees from the center
-    if not hasattr(navigate_to_aruco, "pids"):
-        navigate_to_aruco.pids = {
-            'yaw_pid': PID(Kp=1, Ki=0, Kd=0.1, setpoint=0.0, output_limits=(-max_yaw, max_yaw)),
-            'throttle_pid': PID(Kp=2, Ki=0, Kd=0.1, setpoint=0.3, output_limits=(-max_thr, max_thr))
-        }
-    yaw_pid = navigate_to_aruco.pids['yaw_pid']
-    thr_pid = navigate_to_aruco.pids['throttle_pid']
-
-    markers, ids = pe.find_arucos(frame, drawing_frame=drawing_frame)
-    if markers and ids is not None:
-        # Find the marker with the lowest ID
-        min_id_index = np.argmin(ids)
-        marker = markers[min_id_index]
-        # Remove extra nesting if necessary; otherwise, pass marker directly.
-        _, _, _, cam_dist, _, cam_yaw = pe.estimate_marker_pose( marker_corners=marker, frame=frame, ref_size=0.063300535, fov_x=math.radians(60) )
-        print(f"Dist: {cam_dist:.2f}, Yaw: {math.degrees(cam_yaw):.2f}")
-        yaw = yaw_pid(cam_yaw)
-        
-        # Compute interpolation factor 'alpha'
-        # alpha = 0 when yaw error is >= threshold, alpha = 1 when yaw error is 0.
-        alpha = 1 - (abs(cam_yaw) / math.radians(yaw_threshold)) if abs(cam_yaw) < math.radians(yaw_threshold) else 0
-
-        # Interpolate the distance input: when alpha is 0, measured distance is set to the setpoint.
-        measured_distance = (1 - alpha) * thr_pid.setpoint + alpha * cam_dist
-        throttle = -thr_pid(measured_distance)
     else:
-        throttle, yaw = 0, 0
-        # Write "Searching for ArUco" on the frame
-        cv2.putText(drawing_frame, "Searching for ArUco", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
-
-    return throttle, yaw
+        return 0, 0
 
 def stop_at_intersection(frame, drawing_frame=None, intersection=None):
     # Static variables
@@ -1019,10 +1021,19 @@ intersection_pipeline = [
     ("mask_intersection", lambda: find_dots(frame, drawing_frame=drawing_frame)),
 ]
 
+checkerboard_pipeline = [
+    ("undistort", lambda: undistort_fisheye(frame, drawing_frame=drawing_frame, zoom=False)),
+    ("checkerboard_corners", lambda: get_checkerboard_corners(frame, drawing_frame=drawing_frame)),
+    ("estimate_distance_from_height", lambda: estimate_distance_from_height(frame, drawing_frame=drawing_frame)),
+    ("is_flag_at_distance", lambda: print(is_flag_at_distance(frame, drawing_frame=drawing_frame))),
+]
+
 if __name__ == "__main__":
-    vp = VideoPlayer(r"resources/videos/track7.mp4")  # Path to the video file
+    # vp = VideoPlayer(r"resources/videos/track7.mp4")  # Path to the video file
     # vp = VideoPlayer(r"resources\screenshots\stoplight")  # Path to the image folder
     # vp = VideoPlayer(r"resources/videos/stoplight_test.mp4")  # Path to the video file
+    # vp = VideoPlayer(r"screenshots\2025-05-21_15-09-06")  # Path to the video file
+    vp = VideoPlayer(r"resources\videos\output_2025-05-21_16-14-54.mp4")  # Path to the video file
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
@@ -1050,6 +1061,7 @@ if __name__ == "__main__":
         pipeline = line_detection_pipeline
         pipeline = intersection_pipeline
         pipeline = stoplight_pipeline
+        pipeline = checkerboard_pipeline
 
         # Choose the layer to show. Layer 1 is do nothing. Layer 2 is index 0 in the pipeline, etc.
         if layer >= 2 and layer <= len(pipeline) + 1:
