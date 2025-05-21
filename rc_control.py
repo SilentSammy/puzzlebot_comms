@@ -199,7 +199,7 @@ try:
         elif nav_mode == 3:
             throttle, yaw = vn.waypoint_navigation(frame, drawing_frame)
         elif nav_mode == 4:
-            throttle, yaw = vn.follow_line(frame, drawing_frame, max_thr=0.25, align_thres=0.2)
+            throttle, yaw = vn.follow_line(frame, drawing_frame, max_thr=0.225, align_thres=0.2)
         elif nav_mode == 5:
             throttle, yaw = vn.sequence(speed_factor=2)
         
