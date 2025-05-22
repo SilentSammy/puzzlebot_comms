@@ -126,7 +126,8 @@ intersection_pipeline = [
 ]
 
 checkerboard_pipeline = [
-    ("estimate_distance_from_height", lambda: vn.estimate_distance_from_flag(frame, drawing_frame=drawing_frame)),
+    ("get_flag_distance", lambda: print(vn.get_flag_distance(frame, drawing_frame=drawing_frame))),
+    ("get_flag_distance_nb", lambda: print(vn.get_flag_distance_nb(frame, drawing_frame=drawing_frame))),
 ]
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import threading
 from simple_pid import PID
 import numpy as np
 import math
@@ -692,7 +693,8 @@ def identify_intersection(frame, drawing_frame=None):
         cv2.fillPoly(drawing_frame, [np.array([center, pt1, pt2], np.int32)], (0, 255, 0)) # Draw the triangle as a filled polygon
     return directions
 
-def estimate_distance_from_flag(frame, drawing_frame=None,
+# FLAG VISION STAGES
+def get_flag_distance(frame, drawing_frame=None,
     pattern_size=(4, 3),
     square_size=0.025,
 ):
@@ -702,7 +704,7 @@ def estimate_distance_from_flag(frame, drawing_frame=None,
     """
     ret, corners = cv2.findChessboardCorners(frame, pattern_size, None)
     if not ret:
-        return None, None
+        return None
     f_y = K[1,1]
     ys = corners[:,:,1].flatten()
     h_pix = ys.max() - ys.min()
@@ -728,28 +730,43 @@ def estimate_distance_from_flag(frame, drawing_frame=None,
         cv2.putText(drawing_frame, text2, (x, y2), font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
     return dist
 
-def is_flag_at_distance(frame, drawing_frame=None,
-    pattern_size = (4, 3),
-    square_size = 0.025,
-    threshold=0.4
+def get_flag_distance_nb(frame, drawing_frame=None,
+    pattern_size=(4, 3),
+    square_size=0.025,
 ):
-    dist, _ = estimate_distance_from_flag(frame, drawing_frame=drawing_frame, pattern_size=pattern_size, square_size=square_size)
-    if dist is None:
-        return False
-    reached = dist <= threshold
-    if drawing_frame is not None and reached:
-        # Get frame dimensions
-        h, w = drawing_frame.shape[:2]
-        # Calculate position for centered text
-        text = f"Flag reached!"
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 1
-        thickness = 2
-        (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
-        x = (w - text_width) // 2
-        y = (h + text_height) // 2
-        cv2.putText(drawing_frame, text, (x, y), font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
-    return reached
+    # Static worker thread
+    if not hasattr(get_flag_distance_nb, "worker"):
+        get_flag_distance_nb.worker = None
+        get_flag_distance_nb.lock = threading.Lock()
+        get_flag_distance_nb.last_result = None
+    
+    with get_flag_distance_nb.lock:
+        result = get_flag_distance_nb.last_result
+    
+    # If processing is not ongoing, process in background
+    if get_flag_distance_nb.worker is None or not get_flag_distance_nb.worker.is_alive():
+        def worker_func(frame_copy, pattern_size, square_size):
+            dist = get_flag_distance( frame_copy, drawing_frame=None, pattern_size=pattern_size, square_size=square_size )
+            with get_flag_distance_nb.lock:
+                get_flag_distance_nb.last_result = dist
+    
+        # Start the worker thread
+        t = threading.Thread(
+            target=worker_func,
+            args=(frame.copy(), pattern_size, square_size),
+        )
+        t.daemon = True
+        t.start()
+        get_flag_distance_nb.worker = t
+    
+    if drawing_frame is not None:
+        # Write the result in the middle of the frame if result is not None
+        if result is not None:
+            cv2.putText(drawing_frame, f"Flag at {result:.2f} m", (drawing_frame.shape[1]//2-100, drawing_frame.shape[0]//2), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2, cv2.LINE_AA)
+        else:
+            cv2.putText(drawing_frame, "Flag not found", (drawing_frame.shape[1]//2-100, drawing_frame.shape[0]//2), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2, cv2.LINE_AA)
+
+    return result
 
 # END NAVIGATION ALGORITHMS (THESE RETURN THROTTLE AND YAW) (NON-BLOCKING, MUST BE CALLED IN A LOOP)
 def sequence(actions=None, when_done=None, speed_factor=1):
@@ -850,7 +867,7 @@ def follow_line_w_signs(frame, drawing_frame=None):
     follow_line_w_signs.end_reached = follow_line_w_signs.end_reached if hasattr(follow_line_w_signs, "end_reached") else False
 
     # Check if the flag has been reached
-    flag_is_close = is_flag_at_distance(frame)
+    flag_is_close = get_flag_distance_nb(frame)
     if not follow_line_w_signs.end_reached:
         follow_line_w_signs.end_reached = flag_is_close
     print(f"Flag reached: {follow_line_w_signs.end_reached}")
@@ -900,4 +917,3 @@ def stop_at_intersection(frame, drawing_frame=None, intersection=None):
         throttle = v_pid(measured_distance)
 
     return throttle, yaw
-

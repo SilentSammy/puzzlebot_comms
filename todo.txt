@@ -8,10 +8,14 @@
 + calibrate camera
 + finish implementing adaptive threshold in follow_line
 + make simulated track more noisy (seams and shadows)
-- implement find_corresponding_point to detect persistent line candidate. for this, make add function called get_persistent_line() to the pipeline
-- smarter intersection alignment algorithm
-- allow streaming estimated pose
+-- implement find_corresponding_point to detect persistent line candidate. for this, make add function called get_persistent_line() to the pipeline
+-- smarter intersection alignment algorithm
+-- allow streaming estimated pose
 + return 0.0, 0.0 instead of 0,0
-- rename flag_detector package
 + separate videoplayer and visual_navigation
 + don't use undistorted frame
+
++ make non-blocking flag distance estimator
+- allow videoplayer to either take a path to video or images OR Cap object for live layer viewing
+- rename flag_detector package
+- allow follow_line_w_signs to do something when done
