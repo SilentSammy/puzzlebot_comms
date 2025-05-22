@@ -1,3 +1,4 @@
+import os
 from simple_pid import PID
 import numpy as np
 import math
@@ -692,7 +693,22 @@ def identify_intersection(frame, drawing_frame=None):
         cv2.fillPoly(drawing_frame, [np.array([center, pt1, pt2], np.int32)], (0, 255, 0)) # Draw the triangle as a filled polygon
     return directions
 
-def estimate_distance_from_flag(frame, drawing_frame=None,
+# CHECKERBOARD VISION STAGES
+def get_checkerboard_corners(frame, drawing_frame=None, 
+    pattern_size = (4, 3), # Number of inner corners per a chessboard row and column
+):
+    """Detects inner corners of a checkerboard."""
+    frame = undistort_fisheye(frame, zoom=False)[0]
+    if drawing_frame is not None:
+        # Overwrite the drawing frame with the undistorted frame for debugging.
+        drawing_frame[:] = frame.copy()
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    ret, corners = cv2.findChessboardCorners(gray, pattern_size, None)
+    if ret and drawing_frame is not None:
+        cv2.drawChessboardCorners(drawing_frame, pattern_size, corners, ret)
+    return corners if ret else None
+
+def estimate_distance_from_height(frame, drawing_frame=None,
     pattern_size=(4, 3),
     square_size=0.025,
 ):
@@ -700,43 +716,29 @@ def estimate_distance_from_flag(frame, drawing_frame=None,
     Estima Z (m) usando solo la altura en píxeles del patrón.
     Devuelve (Z, h_pix).
     """
-    ret, corners = cv2.findChessboardCorners(frame, pattern_size, None)
-    if not ret:
+    corners = get_checkerboard_corners(frame, drawing_frame=drawing_frame, pattern_size=pattern_size)
+    if corners is None:
         return None, None
     f_y = K[1,1]
     ys = corners[:,:,1].flatten()
     h_pix = ys.max() - ys.min()
     # Altura real entre la primer y última fila de esquinas internas
     H_real = square_size * (pattern_size[1] - 1)
-    dist = (f_y * H_real) / h_pix
+    Z = (f_y * H_real) / h_pix
     if drawing_frame is not None:
-        # Draw text above the topmost chessboard corner
-        cv2.drawChessboardCorners(drawing_frame, pattern_size, corners, ret)
-        top_y = int(ys.min())
-        left_x = int(corners[:,:,0].flatten().min())
-        text1 = f"Z: {dist:.2f} m"
-        text2 = f"h_pix: {h_pix:.2f}"
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 1
-        thickness = 2
-        (tw1, th1), _ = cv2.getTextSize(text1, font, font_scale, thickness)
-        (tw2, th2), _ = cv2.getTextSize(text2, font, font_scale, thickness)
-        x = left_x
-        y1 = max(top_y - 10, th1 + 5)
-        y2 = y1 + th2 + 10
-        cv2.putText(drawing_frame, text1, (x, y1), font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
-        cv2.putText(drawing_frame, text2, (x, y2), font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
-    return dist
+        cv2.putText(drawing_frame, f"Z: {Z:.2f} m", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(drawing_frame, f"h_pix: {h_pix:.2f}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+    return Z, h_pix
 
-def is_flag_at_distance(frame, drawing_frame=None,
+def is_flag_at_distance(frame, drawing_frame,
     pattern_size = (4, 3),
     square_size = 0.025,
     threshold=0.4
 ):
-    dist, _ = estimate_distance_from_flag(frame, drawing_frame=drawing_frame, pattern_size=pattern_size, square_size=square_size)
-    if dist is None:
+    Z, _ = estimate_distance_from_height(frame, drawing_frame=drawing_frame, pattern_size=pattern_size, square_size=square_size)
+    if Z is None:
         return False
-    reached = dist <= threshold
+    reached = Z <= threshold
     if drawing_frame is not None and reached:
         # Get frame dimensions
         h, w = drawing_frame.shape[:2]
@@ -840,7 +842,7 @@ def follow_line(frame, drawing_frame=None,
         cv2.putText(drawing_frame, "Searching for line", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
     
     return throttle, yaw  # Comment this line to disable output
-    return 0.0, 0.0
+    return 0, 0
 
 def follow_line_w_signs(frame, drawing_frame=None):
     # Static variables
@@ -850,7 +852,7 @@ def follow_line_w_signs(frame, drawing_frame=None):
     follow_line_w_signs.end_reached = follow_line_w_signs.end_reached if hasattr(follow_line_w_signs, "end_reached") else False
 
     # Check if the flag has been reached
-    flag_is_close = is_flag_at_distance(frame)
+    flag_is_close = is_flag_at_distance(frame, drawing_frame=drawing_frame)
     if not follow_line_w_signs.end_reached:
         follow_line_w_signs.end_reached = flag_is_close
     print(f"Flag reached: {follow_line_w_signs.end_reached}")
@@ -868,7 +870,7 @@ def follow_line_w_signs(frame, drawing_frame=None):
     if not follow_line_w_signs.end_reached:
         return thr, yaw
     else:
-        return 0.0, 0.0
+        return 0, 0
 
 def stop_at_intersection(frame, drawing_frame=None, intersection=None):
     # Static variables
@@ -900,4 +902,3 @@ def stop_at_intersection(frame, drawing_frame=None, intersection=None):
         throttle = v_pid(measured_distance)
 
     return throttle, yaw
-

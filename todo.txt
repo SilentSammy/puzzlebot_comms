@@ -9,6 +9,9 @@
 + finish implementing adaptive threshold in follow_line
 + make simulated track more noisy (seams and shadows)
 - implement find_corresponding_point to detect persistent line candidate. for this, make add function called get_persistent_line() to the pipeline
-+- for track detection, also make a mask of only low saturation pixels, and combine with adaptive_thres mask to remove non-grays
 - smarter intersection alignment algorithm
 - allow streaming estimated pose
++ return 0.0, 0.0 instead of 0,0
+- rename flag_detector package
++ separate videoplayer and visual_navigation
++ don't use undistorted frame
