@@ -158,8 +158,9 @@ if __name__ == "__main__":
     # vp = VideoPlayer(r"resources/videos/track7.mp4")  # Path to the video file
     # vp = VideoPlayer(r"resources\screenshots\calibration")  # Path to the image folder
     # vp = VideoPlayer(r"resources/videos/stoplight_test.mp4")  # Path to the video file
-    vp = VideoPlayer(r"resources\videos\output_2025-05-21_16-14-54.mp4")  # Path to the video file
+    # vp = VideoPlayer(r"resources\videos\output_2025-05-21_16-14-54.mp4")  # Path to the video file
     # vp = VideoPlayer(cv2.VideoCapture("http://192.168.137.90:5000/car_cam"))
+    vp = VideoPlayer(cv2.VideoCapture("http://127.0.0.1:5000/car_cam"))
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled

@@ -810,10 +810,10 @@ def sequence(actions=None, when_done=None, speed_factor=1):
     return throttle, yaw
 
 def follow_line(frame, drawing_frame=None,
-    Kp=0.6, Ki=0, Kd=0.1, # PID parameters
-    max_yaw=math.radians(60), # Maximum yaw in radians
-    max_thr=0.2, # Maximum throttle
-    align_thres = 0.3 # Throttle will be max_thr when aligned, 0 at the threshold, and negative below the threshold.
+    Kp=0.6, Ki=0, Kd=0.1,       # PID parameters
+    max_yaw=math.radians(60),   # Maximum yaw in radians
+    max_thr=0.2,                # Maximum throttle
+    align_thres = 0.3           # Throttle will be max_thr when aligned, 0 at the threshold, and negative below the threshold.
 ):
     """ Follow the line in the frame """
 
@@ -838,9 +838,6 @@ def follow_line(frame, drawing_frame=None,
         # Decrease throttle as the line moves away from the center.
         alignment = 1 - abs(normalized_x) # 1 when centered, 0 when at the edge.
         x =  ((alignment - align_thres) / (1 - align_thres)) # From 1 to -1
-        T = 0.7
-        m = 0.5
-        # thr_factor = m * x if x <= T else m * T + m * (x - T) + ((1 - m) / ((1 - T) ** 2)) * (x - T) ** 2
         thr_factor = x
         throttle = max_thr * thr_factor
 
@@ -863,18 +860,18 @@ def follow_line_w_signs(frame, drawing_frame=None):
     follow_line_w_signs.stoplight = follow_line_w_signs.stoplight if hasattr(follow_line_w_signs, "stoplight") else 2
     follow_line_w_signs.end_reached = follow_line_w_signs.end_reached if hasattr(follow_line_w_signs, "end_reached") else False
 
+    # # Determine the speed factor based on the stoplight.
+    stoplight = identify_stoplight(frame, drawing_frame=drawing_frame)
+    if stoplight is not None and stoplight != 1: # If red or green, remember it
+        follow_line_w_signs.stoplight = stoplight
+    speed_factor = (stoplight or follow_line_w_signs.stoplight) * 0.5
+
     # Check if the flag has been reached
     dist = get_flag_distance_nb(frame, drawing_frame=drawing_frame)
     flag_is_close = dist is not None and dist < 0.3
     if not follow_line_w_signs.end_reached:
         follow_line_w_signs.end_reached = flag_is_close
     print(f"Flag reached: {follow_line_w_signs.end_reached}")
-
-    # # Determine the speed factor based on the stoplight.
-    stoplight = identify_stoplight(frame, drawing_frame=drawing_frame)
-    if stoplight is not None and stoplight != 1: # If red or green, remember it
-        follow_line_w_signs.stoplight = stoplight
-    speed_factor = (stoplight or follow_line_w_signs.stoplight) * 0.5
 
     thr, yaw = follow_line(frame, drawing_frame=drawing_frame)
     thr *= speed_factor
@@ -914,3 +911,9 @@ def stop_at_intersection(frame, drawing_frame=None, intersection=None):
         throttle = v_pid(measured_distance)
 
     return throttle, yaw
+
+def reset():
+    follow_line.__dict__.clear()
+    identify_stoplight.__dict__.clear()
+    follow_line_w_signs.__dict__.clear()
+    get_flag_distance_nb.__dict__.clear()

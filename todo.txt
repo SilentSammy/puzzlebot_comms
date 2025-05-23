@@ -17,5 +17,6 @@
 
 + make non-blocking flag distance estimator
 + allow videoplayer to either take a path to video or images OR Cap object for live layer viewing
-- rename flag_detector package
++ rename flag_detector package
++ allow resetting everything that persists in visual_navigation
 - allow follow_line_w_signs to do something when done

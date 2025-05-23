@@ -13,10 +13,10 @@ from simple_pid import PID
 import visual_navigation as vn
 
 # Connection
-puzzlebot = PuzzlebotHttpClient("http://192.168.137.90:5000", safe_mode=True)
+# puzzlebot = PuzzlebotHttpClient("http://192.168.137.90:5000", safe_mode=True)
 # puzzlebot = PuzzlebotHttpClient("http://192.168.43.125:5000", safe_mode=True)
 # puzzlebot = PuzzlebotHttpClient("http://192.168.137.202:5000", safe_mode=True)
-# puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
+puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
 
 # Maximum values for throttle and yaw
 max_yaw = math.radians(180)
@@ -174,6 +174,11 @@ try:
         if rising_edge('z', 'Y'):
             puzzlebot.safe_mode = not puzzlebot.safe_mode
             print(f"Safe mode: {puzzlebot.safe_mode}")
+
+        # Reset navigation
+        if rising_edge('r'):
+            vn.reset()
+            reset_nav_mode()
 
         # Control mode selection
         if rising_edge('1', 'X'):
