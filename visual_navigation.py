@@ -304,10 +304,7 @@ def ellipse_mask(mask, drawing_frame=None,
         # 6. Outside-area ratio filter
         outside_pixels = ellipse_pixels - filled   # Pixels inside ellipse but not in the mask
         outside_ratio = outside_pixels / ellipse_pixels
-        print(f"Ellipse at ({center_x:.1f}, {center_y:.1f}), axes=({axis1:.1f}, {axis2:.1f}), angle={angle:.1f}: "
-            f"outside_pixels={outside_pixels}, ellipse_pixels={ellipse_pixels}, outside_ratio={outside_ratio:.3f}")
         if outside_ratio > max_outside_ratio:
-            print(f"Rejected ellipse: outside_ratio {outside_ratio:.3f} > max_outside_ratio {max_outside_ratio}")
             if drawing_frame is not None:
                 cv2.ellipse(drawing_frame, ellipse, (255, 0, 0), 2)  # Draw ellipse in blue
             continue
@@ -867,17 +864,17 @@ def follow_line_w_signs(frame, drawing_frame=None):
     follow_line_w_signs.end_reached = follow_line_w_signs.end_reached if hasattr(follow_line_w_signs, "end_reached") else False
 
     # Check if the flag has been reached
-    flag_is_close = get_flag_distance_nb(frame)
+    dist = get_flag_distance_nb(frame, drawing_frame=drawing_frame)
+    flag_is_close = dist is not None and dist < 0.3
     if not follow_line_w_signs.end_reached:
         follow_line_w_signs.end_reached = flag_is_close
     print(f"Flag reached: {follow_line_w_signs.end_reached}")
 
     # # Determine the speed factor based on the stoplight.
-    # stoplight = identify_stoplight(frame, drawing_frame=drawing_frame)
-    # if stoplight is not None and stoplight != 1: # If red or green, remember it
-    #     follow_line_w_signs.stoplight = stoplight
-    # speed_factor = (stoplight or follow_line_w_signs.stoplight) * 0.5
-    speed_factor = 1.0
+    stoplight = identify_stoplight(frame, drawing_frame=drawing_frame)
+    if stoplight is not None and stoplight != 1: # If red or green, remember it
+        follow_line_w_signs.stoplight = stoplight
+    speed_factor = (stoplight or follow_line_w_signs.stoplight) * 0.5
 
     thr, yaw = follow_line(frame, drawing_frame=drawing_frame)
     thr *= speed_factor

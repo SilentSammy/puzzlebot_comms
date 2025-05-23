@@ -148,17 +148,22 @@ checkerboard_pipeline = [
     ("get_flag_distance_nb", lambda: print(vn.get_flag_distance_nb(frame, drawing_frame=drawing_frame))),
 ]
 
+algorithms = [
+    ("follow_line", lambda: vn.follow_line(frame, drawing_frame)),
+    ("follow_line_w_signs", lambda: vn.follow_line_w_signs(frame, drawing_frame)),
+]
+
 if __name__ == "__main__":
     import keybrd
     # vp = VideoPlayer(r"resources/videos/track7.mp4")  # Path to the video file
     # vp = VideoPlayer(r"resources\screenshots\calibration")  # Path to the image folder
     # vp = VideoPlayer(r"resources/videos/stoplight_test.mp4")  # Path to the video file
-    # vp = VideoPlayer(r"resources\videos\output_2025-05-21_16-14-54.mp4")  # Path to the video file
-    vp = VideoPlayer(cv2.VideoCapture("http://192.168.137.90:5000/car_cam"))
+    vp = VideoPlayer(r"resources\videos\output_2025-05-21_16-14-54.mp4")  # Path to the video file
+    # vp = VideoPlayer(cv2.VideoCapture("http://192.168.137.90:5000/car_cam"))
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
-    layers = checkerboard_pipeline
+    layers = algorithms
     layer = 1
     
     while True:
