@@ -16,6 +16,6 @@
 + don't use undistorted frame
 
 + make non-blocking flag distance estimator
-- allow videoplayer to either take a path to video or images OR Cap object for live layer viewing
++ allow videoplayer to either take a path to video or images OR Cap object for live layer viewing
 - rename flag_detector package
 - allow follow_line_w_signs to do something when done

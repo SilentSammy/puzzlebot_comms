@@ -54,8 +54,26 @@ class VideoPlayer:
         return int(self._frame_idx)
 
     def setup_video_source(self):
+        # If frame_source is a cv2.VideoCapture object, use it directly
+        if isinstance(self.frame_source, cv2.VideoCapture):
+            cap = self.frame_source
+            if not cap.isOpened():
+                print("Error opening video file")
+                exit(1)
+            self.frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            print("Total frames:", self.frame_count)
+            
+            def get_frame(idx):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = cap.read()
+                if not ret:
+                    print("Failed to get frame", idx)
+                    return None
+                return frame
+            
+            self._get_frame = get_frame
         # If frame_source is a folder, load images
-        if os.path.isdir(self.frame_source):
+        elif os.path.isdir(self.frame_source):
             image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
             image_files = sorted([
                 os.path.join(self.frame_source, f) 
@@ -133,9 +151,10 @@ checkerboard_pipeline = [
 if __name__ == "__main__":
     import keybrd
     # vp = VideoPlayer(r"resources/videos/track7.mp4")  # Path to the video file
-    vp = VideoPlayer(r"resources\screenshots\calibration")  # Path to the image folder
+    # vp = VideoPlayer(r"resources\screenshots\calibration")  # Path to the image folder
     # vp = VideoPlayer(r"resources/videos/stoplight_test.mp4")  # Path to the video file
     # vp = VideoPlayer(r"resources\videos\output_2025-05-21_16-14-54.mp4")  # Path to the video file
+    vp = VideoPlayer(cv2.VideoCapture("http://192.168.137.90:5000/car_cam"))
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled

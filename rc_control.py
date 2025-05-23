@@ -13,7 +13,8 @@ from simple_pid import PID
 import visual_navigation as vn
 
 # Connection
-puzzlebot = PuzzlebotHttpClient("http://192.168.43.125:5000", safe_mode=True)
+puzzlebot = PuzzlebotHttpClient("http://192.168.137.90:5000", safe_mode=True)
+# puzzlebot = PuzzlebotHttpClient("http://192.168.43.125:5000", safe_mode=True)
 # puzzlebot = PuzzlebotHttpClient("http://192.168.137.202:5000", safe_mode=True)
 # puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
 
