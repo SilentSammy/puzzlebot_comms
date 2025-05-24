@@ -243,11 +243,11 @@ def ellipse_mask(mask, drawing_frame=None,
     morph_kernel = np.ones((3, 3), np.uint8),       # Kernel for morphological operations
     erode_iterations = 3,                           # Number of iterations for erosion
     dilate_iterations = 2,                          # Number of iterations for dilation
-    min_fill_ratio = 0.88,                          # Minimum fill ratio for ellipses
-    max_outside_ratio=0.12,                          # Maximum allowed outside-area ratio
+    min_fill_ratio = 0.85,                          # Minimum fill ratio for ellipses
+    max_outside_ratio=0.15,                          # Maximum allowed outside-area ratio
     max_tilt = 0.5,                                 # Maximum tilt ratio for ellipses
     max_norm_major = 0.8,                           # Maximum normalized major axis for ellipses
-    min_norm_major = 0.025,                          # Minimum normalized major axis for ellipses
+    min_norm_major = 0.02,                          # Minimum normalized major axis for ellipses
     ):
 
     # Erode and dilate to remove noise and fill gaps.
@@ -853,33 +853,40 @@ def follow_line(frame, drawing_frame=None,
     return throttle, yaw  # Comment this line to disable output
     return 0.0, 0.0
 
-def follow_line_w_signs(frame, drawing_frame=None):
+def follow_line_w_signs(frame, drawing_frame=None, end_action=None):
     # Static variables
     follow_line_w_signs.tmr = follow_line_w_signs.tmr if hasattr(follow_line_w_signs, "tmr") else 0
     follow_line_w_signs.action_index = follow_line_w_signs.action_index if hasattr(follow_line_w_signs, "action_index") else -1
     follow_line_w_signs.stoplight = follow_line_w_signs.stoplight if hasattr(follow_line_w_signs, "stoplight") else 2
     follow_line_w_signs.end_reached = follow_line_w_signs.end_reached if hasattr(follow_line_w_signs, "end_reached") else False
 
-    # # Determine the speed factor based on the stoplight.
-    stoplight = identify_stoplight(frame, drawing_frame=drawing_frame)
-    if stoplight is not None and stoplight != 1: # If red or green, remember it
-        follow_line_w_signs.stoplight = stoplight
-    speed_factor = (stoplight or follow_line_w_signs.stoplight) * 0.5
-
-    # Check if the flag has been reached
-    dist = get_flag_distance_nb(frame, drawing_frame=drawing_frame)
-    flag_is_close = dist is not None and dist < 0.3
     if not follow_line_w_signs.end_reached:
+        # Determine the speed factor based on the stoplight.
+        stoplight = identify_stoplight(frame, drawing_frame=drawing_frame)
+        if stoplight is not None and stoplight != 1: # If red or green, remember it
+            follow_line_w_signs.stoplight = stoplight
+        speed_factor = (stoplight or follow_line_w_signs.stoplight) * 0.5
+        
+        # Check if the flag is close
+        dist = get_flag_distance_nb(frame, drawing_frame=drawing_frame)
+        flag_is_close = dist is not None and dist < 0.5
         follow_line_w_signs.end_reached = flag_is_close
-    print(f"Flag reached: {follow_line_w_signs.end_reached}")
 
-    thr, yaw = follow_line(frame, drawing_frame=drawing_frame)
-    thr *= speed_factor
-    yaw *= speed_factor
-    if not follow_line_w_signs.end_reached:
+        if not follow_line_w_signs.end_reached:
+            thr, yaw = follow_line(frame, drawing_frame=drawing_frame)
+            thr *= speed_factor
+            yaw *= speed_factor
+        else:
+            if end_action:
+                end_action()
+            thr = 0
+            yaw = 0
+
         return thr, yaw
     else:
-        return 0.0, 0.0
+        if drawing_frame is not None:
+            cv2.putText( drawing_frame, "Flag reached", (drawing_frame.shape[1] // 2 - 80, drawing_frame.shape[0] // 2), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA )
+        return 0, 0
 
 def stop_at_intersection(frame, drawing_frame=None, intersection=None):
     # Static variables

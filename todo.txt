@@ -19,4 +19,9 @@
 + allow videoplayer to either take a path to video or images OR Cap object for live layer viewing
 + rename flag_detector package
 + allow resetting everything that persists in visual_navigation
-- allow follow_line_w_signs to do something when done
++ allow follow_line_w_signs to do something when done
++ check which videos and screenshots are worth keeping
+- use undistorted image for get_flag_distance, then calculate redistorted corners
+- allow get_flag_distance_nb to draw corners in near-real time
+- make identify_stoplight_nb
+- 

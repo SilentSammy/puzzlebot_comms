@@ -46,22 +46,23 @@ def video_source():
         return None
     return frame
 
-try:
-    sim.startSimulation()
-    # Start a timer to call car.accelerate_to and car.spin_up_to every 0.1 seconds
-    def update_car_speed():
-        while True:
-            if use_safe:
-                with sim_lock:
-                    car.accelerate_to(lin_vel_safe)
-                    car.spin_up_to(ang_vel_safe)
-            time.sleep(0.1)
-    threading.Thread(target=update_car_speed, daemon=True).start()
+if __name__ == "__main__":
+    try:
+        sim.startSimulation()
+        # Start a timer to call car.accelerate_to and car.spin_up_to every 0.1 seconds
+        def update_car_speed():
+            while True:
+                if use_safe:
+                    with sim_lock:
+                        car.accelerate_to(lin_vel_safe)
+                        car.spin_up_to(ang_vel_safe)
+                time.sleep(0.1)
+        threading.Thread(target=update_car_speed, daemon=True).start()
 
-    # Start the web server and simulation
-    web.http_endpoints["cmd_vel"] = receive_vel
-    web.http_endpoints["cmd_vel_safe"] = receive_vel_safe
-    web.video_endpoints["car_cam"] = video_source
-    web.start_webserver(threaded=False)
-finally:
-    sim.stopSimulation()
+        # Start the web server and simulation
+        web.http_endpoints["cmd_vel"] = receive_vel
+        web.http_endpoints["cmd_vel_safe"] = receive_vel_safe
+        web.video_endpoints["car_cam"] = video_source
+        web.start_webserver(threaded=False)
+    finally:
+        sim.stopSimulation()

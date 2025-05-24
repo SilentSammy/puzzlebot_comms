@@ -13,10 +13,8 @@ from simple_pid import PID
 import visual_navigation as vn
 
 # Connection
-# puzzlebot = PuzzlebotHttpClient("http://192.168.137.90:5000", safe_mode=True)
-# puzzlebot = PuzzlebotHttpClient("http://192.168.43.125:5000", safe_mode=True)
-# puzzlebot = PuzzlebotHttpClient("http://192.168.137.202:5000", safe_mode=True)
-puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5000", safe_mode=False)
+puzzlebot = PuzzlebotHttpClient("http://192.168.43.125:5000", safe_mode=True)
+# puzzlebot = PuzzlebotHttpClient("http://192.168.137.235:5000", safe_mode=False)
 
 # Maximum values for throttle and yaw
 max_yaw = math.radians(180)
@@ -104,7 +102,7 @@ def screenshot(frame):
 
     # Static variables
     screenshot.last_time = screenshot.last_time if hasattr(screenshot, 'last_time') else None
-    screenshot.dir_path = screenshot.dir_path if hasattr(screenshot, 'dir_path') else "./screenshots/"+time.strftime("%Y-%m-%d_%H-%M-%S")
+    screenshot.dir_path = screenshot.dir_path if hasattr(screenshot, 'dir_path') else "./resources/screenshots/dated/"+time.strftime("%Y-%m-%d_%H-%M-%S")
     screenshot.count = screenshot.count if hasattr(screenshot, 'count') else 0
 
     # If less than n seconds have passed since the last screenshot, return
@@ -161,7 +159,6 @@ try:
     while True:
         # Inputs and outputs
         frame = puzzlebot.get_frame()
-        # frame = vn.undistort_fisheye(frame)
         drawing_frame = frame.copy()
         throttle, yaw = 0, 0
 
@@ -193,9 +190,9 @@ try:
         
         # Control
         if nav_mode == 2:
-            throttle, yaw = vn.follow_line_w_signs(frame, drawing_frame)
+            throttle, yaw = vn.follow_line_w_signs(frame, drawing_frame, end_action=lambda: print("Done!"))
         elif nav_mode == 3:
-            throttle, yaw = vn.follow_line(frame, drawing_frame, max_thr=0.225, align_thres=0.2)
+            throttle, yaw = vn.follow_line(frame, drawing_frame, max_thr=0.2, align_thres=0.3)
         
         # Always allow manual control
         thr, yw = manual_control()

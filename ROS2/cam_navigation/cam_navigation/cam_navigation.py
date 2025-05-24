@@ -8,6 +8,7 @@ from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 from cam_navigation import visual_navigation as vn
+from cam_navigation import buzzer
 
 def navigate_stub(frame, drawing_frame=None):
     # Example: draw the frame’s average brightness as text
@@ -106,18 +107,12 @@ class CamNavigationNode(Node):
         """
 
         # thr, yaw = navigate_stub(frame, drawing_frame)
-        thr, yaw = vn.follow_line(frame, drawing_frame=drawing_frame)
+        action = lambda: buzzer.play_melody_nonblocking(buzzer.melodies["custom_success_chime"])
+        thr, yaw = vn.follow_line_w_signs(frame, drawing_frame=drawing_frame, end_action=action)
         
         return thr, yaw
 
     def destroy_node(self):
-        # Stop the robot by sending zero velocity
-        stop_twist = Twist()
-        stop_twist.linear.x = 0.0
-        stop_twist.angular.z = 0.0
-        self.cmd_pub.publish(stop_twist)
-        self.get_logger().info("Sent stop command")
-
         # Release the camera
         with self._cap_lock:
             if self._cap is not None and self._cap.isOpened():
