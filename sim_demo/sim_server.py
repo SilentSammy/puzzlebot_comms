@@ -60,6 +60,7 @@ if __name__ == "__main__":
         threading.Thread(target=update_car_speed, daemon=True).start()
 
         # Start the web server and simulation
+        web.port = 5001
         web.http_endpoints["cmd_vel"] = receive_vel
         web.http_endpoints["cmd_vel_safe"] = receive_vel_safe
         web.video_endpoints["car_cam"] = video_source

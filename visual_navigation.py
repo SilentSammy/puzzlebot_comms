@@ -523,7 +523,7 @@ def identify_stoplight(frame, drawing_frame=None,
 # INTERSECTION VISION STAGES
 def get_dark_mask(frame, drawing_frame=None,
     undistort=True,
-    v_fov = 0.6,  # Bottom field of view (0.6 = 60% of the frame height)
+    v_fov = 0.55,  # Bottom field of view (0.6 = 60% of the frame height)
     morph_kernel = np.ones((3, 3), np.uint8),  # Kernel for morphological operations
     erode_iterations = 3,  # Number of iterations for erosion
     dilate_iterations = 2,  # Number of iterations for dilation
@@ -795,19 +795,56 @@ def follow_line(frame, drawing_frame=None,
     return throttle, yaw  # Comment this line to disable output
     return 0.0, 0.0
 
-def follow_line_w_intersection(frame, drawing_frame=None,
+def navigate_track(frame, drawing_frame=None,
     undistort=False,
-):
+    decision_func=None,
+):  
+    # Static variables
+    navigate_track.tmr = navigate_track.tmr if hasattr(navigate_track, "tmr") else 0
+    navigate_track.action_index = navigate_track.action_index if hasattr(navigate_track, "action_index") else -1
+
+    # Define sequences of actions (v, w, t)
+    backward = [ (0, math.radians(30), 6) ]
+    turn_left = [
+        (0.15, 0, 2), # Move 30cm forward
+        (0, math.radians(30), 3), # left 90° turn
+        (0.15, 0, 2), # Move 30cm forward
+    ]
+    turn_right = [
+        (0.15, 0, 2), # Move 30cm forward
+        (0, -math.radians(30), 3), # right 90° turn
+        (0.15, 0, 2), # Move 30cm forward
+    ]
+    forward = [ (0.15, 0, 4) ]
+    actions = [backward, turn_left, turn_right, forward]
+    decision_func = decision_func or (lambda frame: 2) # Default decision function
+    
+    # If an action is in progress execute it.
+    if navigate_track.action_index != -1:
+        def reset_action():
+            navigate_track.action_index = -1
+        thr, yaw = sequence(actions=actions[navigate_track.action_index], when_done=reset_action)
+        return thr, yaw
+
     # Attempt to find intersection
     intersection = find_intersection(frame, drawing_frame=drawing_frame, undistort=undistort)
 
     # If intersection is found, stop at it
     if intersection is not None:
-        throttle, yaw = stop_at_intersection(frame, drawing_frame=drawing_frame, intersection=intersection)
+        thr, yaw = stop_at_intersection(frame, drawing_frame=drawing_frame, intersection=intersection)
+
+        # Wait for the robot to stabilize
+        if not (abs(thr) < 0.02 and abs(thr) < 0.02):
+            navigate_track.tmr = time.time() # Reset the timer (keep waiting)
+        
+        # If the robot has been stable for n seconds choose a random index from the available directions
+        if time.time() - navigate_track.tmr > 2:
+            navigate_track.action_index = decision_func(frame) # Poll the decision function
+
     else:
         # If no intersection is found, follow the line
-        throttle, yaw = follow_line(frame, drawing_frame=drawing_frame)
-    return throttle, yaw
+        thr, yaw = follow_line(frame, drawing_frame=drawing_frame)
+    return thr, yaw
 
 def follow_line_w_signs(frame, drawing_frame=None, end_action=None):
     # Static variables
@@ -852,7 +889,7 @@ def stop_at_intersection(frame, drawing_frame=None, intersection=None):
     if not hasattr(stop_at_intersection, "pids"):
         stop_at_intersection.pids = {
             "w_pid": PID(2.0, 0, 0.1, setpoint=0, output_limits=(-max_yaw, max_yaw)),
-            "v_pid": PID(0.5, 0, 0.1, setpoint=0.7, output_limits=(-max_thr, max_thr)),
+            "v_pid": PID(0.5, 0, 0.1, setpoint=0.75, output_limits=(-max_thr, max_thr)),
         }
     w_pid = stop_at_intersection.pids["w_pid"]
     v_pid = stop_at_intersection.pids["v_pid"]

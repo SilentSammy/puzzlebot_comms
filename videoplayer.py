@@ -157,7 +157,7 @@ algorithms = [
 
 if __name__ == "__main__":
     import keybrd
-    vp = VideoPlayer(r"resources\videos\intersection_clockwise.mp4")  # Path to the video file
+    vp = VideoPlayer(r"resources\videos\intersection_corner.mp4")  # Path to the video file
     # vp = VideoPlayer(cv2.VideoCapture("http://192.168.137.90:5000/car_cam"))
     # vp = VideoPlayer(cv2.VideoCapture("http://127.0.0.1:5000/car_cam"))
     re = keybrd.rising_edge # Function to check if a key is pressed once
