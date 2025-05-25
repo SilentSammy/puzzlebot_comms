@@ -5,6 +5,7 @@ import math
 import cv2
 import time
 from collections import deque
+from itertools import combinations
 
 # GLOBAL CAMERA PARAMETERS
 K = np.array([
@@ -14,19 +15,19 @@ K = np.array([
 ], dtype=np.float64)
 D = np.array([-0.02983132, -0.02312677, 0.03447185, -0.02105932], dtype=np.float64)
 
-# SHARED HELPERS
+# HELPERS
 def get_contour_line_info(c, fix_vert=True):
     # Fit a line to the contour
     vx, vy, cx, cy = cv2.fitLine(c, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
     
     # Project contour points onto the line's direction vector.
-    projections = [((pt[0][0] - cx) * vx + (pt[0][1] - cy) * vy) for pt in c]
+    projections = [((int(pt[0][0]) - int(cx)) * vx + (int(pt[0][1]) - int(cy)) * vy) for pt in c]
     min_proj = min(projections)
     max_proj = max(projections)
     
     # Compute endpoints from the extreme projection values.
-    pt1 = (int(cx + vx * min_proj), int(cy + vy * min_proj))
-    pt2 = (int(cx + vx * max_proj), int(cy + vy * max_proj))
+    pt1 = (int(round(cx + vx * min_proj)), int(round(cy + vy * min_proj)))
+    pt2 = (int(round(cx + vx * max_proj)), int(round(cy + vy * max_proj)))
     
     # Calculate the line angle in degrees.
     angle = math.degrees(math.atan2(vy, vx))
@@ -36,7 +37,80 @@ def get_contour_line_info(c, fix_vert=True):
     # Calculate the line length given pt1 and pt2.
     length = math.hypot(pt2[0] - pt1[0], pt2[1] - pt1[1])
     
-    return pt1, pt2, angle, cx, cy, length
+    # Ensure cx, cy are ints as well
+    cx_int = int(round(cx))
+    cy_int = int(round(cy))
+    
+    return pt1, pt2, angle, cx_int, cy_int, length
+
+def group_dotted_lines_simple(points,
+                              min_inliers=4,
+                              dist_threshold=3.0,
+                              distance_ratio=2.5):
+    """
+    points: list of (x, y) int tuples
+    Returns: list of lists of (x, y) int tuples,
+             each a contiguous dotted‐line segment
+    """
+    pts_arr = np.array(points, dtype=float)
+    # 1) Collect every inlier‐set for each line defined by a point pair
+    candidate_sets = {}
+    for i, j in combinations(range(len(pts_arr)), 2):
+        p1, p2 = pts_arr[i], pts_arr[j]
+        v = p2 - p1
+        norm = np.linalg.norm(v)
+        if norm < 1e-6:
+            continue
+        u = v / norm
+        # normal to line
+        n = np.array([-u[1], u[0]])
+        # distance of every point to this line
+        dists = np.abs((pts_arr - p1) @ n)
+        inliers = np.where(dists <= dist_threshold)[0]
+        if len(inliers) >= min_inliers:
+            # sort the inliers by their original tuple to make a unique key
+            key = tuple(sorted((points[k] for k in inliers)))
+            candidate_sets[key] = inliers
+
+    # 2) For each unique inlier‐set, split it into contiguous segments by gap
+    lines = []
+    for key, idxs in candidate_sets.items():
+        arr = np.array(key, dtype=float)
+        # principal direction via PCA (largest eigenvector of covariance)
+        cov = np.cov(arr, rowvar=False)
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        dir_vec = eigvecs[:, np.argmax(eigvals)]
+
+        # project & sort
+        proj = arr @ dir_vec
+        order = np.argsort(proj)
+        sorted_pts = arr[order]
+
+        # compute gaps and find minimum gap
+        deltas = np.linalg.norm(np.diff(sorted_pts, axis=0), axis=1)
+        if len(deltas) == 0:
+            continue
+        d_min = deltas.min()
+
+        # split on any jump > distance_ratio * d_min
+        segments = []
+        current = [sorted_pts[0]]
+        for pt, gap in zip(sorted_pts[1:], deltas):
+            if gap > distance_ratio * d_min:
+                if len(current) >= min_inliers:
+                    segments.append(current)
+                current = [pt]
+            else:
+                current.append(pt)
+        if len(current) >= min_inliers:
+            segments.append(current)
+
+        # convert back to int tuples
+        for seg in segments:
+            seg_pts = [(int(x), int(y)) for x, y in seg]
+            lines.append(seg_pts)
+
+    return lines
 
 # SHARED VISION STAGES
 def adaptive_thres(frame, drawing_frame=None,
@@ -449,24 +523,32 @@ def identify_stoplight(frame, drawing_frame=None,
 # INTERSECTION VISION STAGES
 def get_dark_mask(frame, drawing_frame=None,
     undistort=True,
+    v_fov = 0.6,  # Bottom field of view (0.6 = 60% of the frame height)
     morph_kernel = np.ones((3, 3), np.uint8),  # Kernel for morphological operations
-    erode_iterations = 4,  # Number of iterations for erosion
+    erode_iterations = 3,  # Number of iterations for erosion
     dilate_iterations = 2,  # Number of iterations for dilation
 ):
+    # Undistort the frame if needed
     valid_mask = None
     if undistort:
         frame, valid_mask = undistort_fisheye(frame, zoom=False)
     
+    # Find dark areas using adaptive thresholding
     mask = adaptive_thres(frame)
 
+    # Crop out the upper part of the mask to keep only the lower part of the frame.
+    mask[:int(frame.shape[:2][0] * (1-v_fov)), :] = 0
+
+    # Crop out invalid areas due to undistortion
     if valid_mask is not None:
         mask = cv2.bitwise_and(mask, mask, mask=valid_mask)
 
     # Erode and dilate to remove noise and fill gaps.
     mask = cv2.erode(mask, kernel=morph_kernel, iterations=erode_iterations)
     mask = cv2.dilate(mask, kernel=morph_kernel, iterations=dilate_iterations)
-
-    if drawing_frame is not None: # Overwrite the drawing frame with the mask for debugging.
+    
+    # Overwrite the drawing frame with the mask for debugging.
+    if drawing_frame is not None:
         drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
 
     return mask
@@ -474,9 +556,10 @@ def get_dark_mask(frame, drawing_frame=None,
 def find_dots(frame, drawing_frame=None,
     max_aspect_ratio = 10.0,
     min_area = 20,
-    ep = 0.07, # Approximation factor for contour approximation
+    ep = 0.035, # Approximation factor for contour approximation
+    undistort=True,
 ):
-    mask = get_dark_mask(frame)
+    mask = get_dark_mask(frame, undistort=undistort)
     
     if drawing_frame is not None:
         drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
@@ -498,8 +581,8 @@ def find_dots(frame, drawing_frame=None,
             # Filter out quadrilaterals that are too elongated
             if min(w, h) == 0 or max(w, h) / min(w, h) > max_aspect_ratio:
                 continue
-            # center = (x + w // 2, y + h // 2)
             pt1, pt2, angle, cx, cy, length = get_contour_line_info(approx, fix_vert=False)
+            center = (cx, cy)
             dots.append(center)
             center = (int(cx), int(cy))
             line = ((pt1[0], pt1[1]), (pt2[0], pt2[1]))
@@ -509,186 +592,43 @@ def find_dots(frame, drawing_frame=None,
         else:
             cv2.polylines(drawing_frame, [approx], True, (255, 0, 0), 2)
 
-    return mask
+    return dots
 
-def identify_intersection(frame, drawing_frame=None):
-    drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
-    def get_dotted_lines(frame, drawing_frame=None):
-        def find_dots(frame, drawing_frame=None):
-            drawing_frame = drawing_frame if drawing_frame is not None else frame.copy()
-            # Adaptive thresholding to create a binary mask
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-            mask = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                        cv2.THRESH_BINARY_INV, 11, 5)
-
-            # Find quadrilateral contours in the mask with sufficient area
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            contours = [c for c in contours if cv2.contourArea(c) > 20]
-            dots = []
-
-            # Maximum allowed aspect ratio (long side divided by short side)
-            max_aspect_ratio = 10.0
-
-            for cnt in contours:
-                # Approximate the contour to a polygon
-                epsilon = 0.03 * cv2.arcLength(cnt, True)
-                approx = cv2.approxPolyDP(cnt, epsilon, True)
-
-                # Check if the approximated contour has 4 points (quadrilateral) and is convex.
-                if len(approx) == 4 and cv2.isContourConvex(approx):
-                    x, y, w, h = cv2.boundingRect(approx)
-                    # Filter out quadrilaterals that are too elongated
-                    if min(w, h) == 0 or max(w, h) / min(w, h) > max_aspect_ratio:
-                        continue
-                    center = (x + w // 2, y + h // 2)
-                    dots.append(center)
-                    # Optionally, draw the detected dot on the image
-                    cv2.circle(drawing_frame, center, 5, (0, 0, 255), -1)
-                    cv2.polylines(drawing_frame, [approx], True, (0, 255, 0), 2)
-
-            return dots
-
-        def cluster_collinear_points(dots, min_points=5, threshold=5, outlier_factor=10.0):
-            """ 
-            Groups dots that are roughly collinear.
-            - threshold: maximum perpendicular distance (in pixels) allowed from the candidate line.
-            - outlier_factor: if a point's closest neighbor distance is greater than outlier_factor times
-            the average gap between points on the candidate line, then that point is considered an outlier.
-            """
-            remaining = dots.copy()
-            groups = []
-
-            while len(remaining) >= min_points:
-                best_group = []
-                best_line = None
-
-                # Test every pair as a candidate line.
-                for i in range(len(remaining)):
-                    for j in range(i+1, len(remaining)):
-                        p1 = remaining[i]
-                        p2 = remaining[j]
-                        # Compute line parameters in the form: ax + by + c = 0.
-                        if p2[0] - p1[0] == 0:
-                            a = 1
-                            b = 0
-                            c = -p1[0]
-                            direction = (0, 1)
-                        else:
-                            slope = (p2[1] - p1[1]) / (p2[0] - p1[0])
-                            a = -slope
-                            b = 1
-                            c = -(a * p1[0] + b * p1[1])
-                            dx = p2[0] - p1[0]
-                            dy = p2[1] - p1[1]
-                            L = math.hypot(dx, dy)
-                            direction = (dx / L, dy / L)
-
-                        # Gather candidate dots that lie within the perpendicular distance threshold.
-                        candidate_group = []
-                        for p in remaining:
-                            dist = abs(a * p[0] + b * p[1] + c) / math.sqrt(a**2 + b**2)
-                            if dist < threshold:
-                                candidate_group.append(p)
-
-                        # Remove outliers based on the neighbors along the candidate line.
-                        if len(candidate_group) >= 2:
-                            # Project each point onto the candidate line.
-                            projections = [((pt[0] * direction[0] + pt[1] * direction[1]), pt)
-                                        for pt in candidate_group]
-                            projections.sort(key=lambda x: x[0])
-                            
-                            # Compute average gap between consecutive projected points.
-                            proj_values = [proj for proj, _ in projections]
-                            if len(proj_values) > 1:
-                                avg_gap = (proj_values[-1] - proj_values[0]) / (len(proj_values) - 1)
-                            else:
-                                avg_gap = 0
-
-                            filtered = []
-                            for idx, (proj, pt) in enumerate(projections):
-                                if idx == 0:
-                                    gap = proj_values[1] - proj
-                                elif idx == len(proj_values) - 1:
-                                    gap = proj - proj_values[idx - 1]
-                                else:
-                                    gap = min(proj - proj_values[idx - 1], proj_values[idx + 1] - proj)
-                                # If the point's nearest neighbor distance is within the acceptable range, keep it.
-                                if gap <= outlier_factor * avg_gap:
-                                    filtered.append(pt)
-                            candidate_group = filtered
-
-                        if len(candidate_group) > len(best_group):
-                            best_group = candidate_group
-                            best_line = (a, b, c)
-
-                if len(best_group) >= min_points:
-                    groups.append(best_group)
-                    # Remove grouped dots from further consideration.
-                    remaining = [p for p in remaining if p not in best_group]
-                else:
-                    break
-
-            return groups
-        
-        def find_line_endpoints(points):
-            endpoint1, endpoint2 = None, None
-            max_distance = 0
-            for i in range(len(points)):
-                for j in range(i+1, len(points)):
-                    d = math.hypot(points[j][0] - points[i][0], points[j][1] - points[i][1])
-                    if d > max_distance:
-                        max_distance = d
-                        endpoint1, endpoint2 = points[i], points[j]
-            return endpoint1, endpoint2
-
-        dots = find_dots(frame, drawing_frame=drawing_frame)
-        groups = cluster_collinear_points(dots)
-        dotted_lines = [find_line_endpoints(group) for group in groups]
-
-        # Optionally draw the lines on the image
-        for line in dotted_lines:
-            cv2.line(drawing_frame, line[0], line[1], (255, 0, 0), 2)
-
-        return dotted_lines
-
-    dotted_lines = get_dotted_lines(frame, drawing_frame=drawing_frame)
-    centers = [((l[0][0] + l[1][0]) // 2, (l[0][1] + l[1][1]) // 2) for l in dotted_lines]
+def find_dotted_lines(frame, drawing_frame=None,
+    min_points=5,  # Minimum number of points to consider a line
+    undistort=True,
+):
+    dots = find_dots(frame, drawing_frame=drawing_frame, undistort=undistort)
+    groups = group_dotted_lines_simple(dots, min_inliers=min_points)
+    dotted_lines = [(group[0], group[-1]) for group in groups if len(group) >= 2]
+    line_centers = [((line[0][0] + line[1][0]) // 2, (line[0][1] + line[1][1]) // 2) for line in dotted_lines]
     angles = [((math.degrees(math.atan2(l[1][1] - l[0][1], l[1][0] - l[0][0])) + 90) % 180) - 90 for l in dotted_lines]
-    dotted_lines = list(zip(dotted_lines, centers, angles))
+
     
-    # Separate into vertical and horizontal lines by angle
-    vert_thres = 30
-    verticals = [dl for dl in dotted_lines if abs(dl[2]) > vert_thres]
-    horizontals = [dl for dl in dotted_lines if abs(dl[2]) <= vert_thres]
+    # Optionally draw the lines and their centers on the image
+    for i, line in enumerate(dotted_lines):
+        cv2.line(drawing_frame, line[0], line[1], (255, 0, 0), 2)
+        cv2.circle(drawing_frame, line_centers[i], 8, (0, 255, 0), -1)
+    return dotted_lines, line_centers, angles
 
-    # Identify the back, left, right, and front lines
-    proximity_sorted = [hor for hor in horizontals if hor[1][1] / frame.shape[0] >= 0.3]
-    proximity_sorted = iter(sorted(proximity_sorted, key=lambda x: x[1][1], reverse=True))
-    mid_x = frame.shape[1] / 2  # Half the frame width
-    left_verticals = [dl for dl in verticals if dl[1][0] < mid_x]
-    left = next(iter(sorted(left_verticals, key=lambda x: x[1][0], reverse=True)), None)
-    right_verticals = [dl for dl in verticals if dl[1][0] > mid_x and dl != left]
-    right = next(iter(sorted(right_verticals, key=lambda x: x[1][0])), None)
-    back = next(proximity_sorted, None)
-    front = next(proximity_sorted, None)
-    proximity_sorted = iter(sorted(dotted_lines, key=lambda x: x[1][1], reverse=True))
-    if back != next(proximity_sorted, None): # If the back line is not the first in the sorted list, it means we have a front line
-        front = back
-        back = None
+def find_intersection(frame, drawing_frame=None,
+    undistort=True,
+):
+    dotted_lines, centers, angles = find_dotted_lines(frame, drawing_frame=None, undistort=undistort)
+    dotted_lines = zip(dotted_lines, centers, angles)
 
-    # Draw a triangle for each available direction. One of the vertices is the center of the line
-    directions = [back, left, right, front]
-    for dl in filter(None, directions):
-        line, center, angle = dl
-        angle_rad_base = math.radians(angle * 1.8 + (90 if dl != back else -90))
-        angle_rad1 = angle_rad_base + math.radians(15)
-        angle_rad2 = angle_rad_base - math.radians(15)
-        h = 50
-        pt1 = int(center[0] + h * math.cos(angle_rad1)), int(center[1] + h * math.sin(angle_rad1))
-        pt2 = int(center[0] + h * math.cos(angle_rad2)), int(center[1] + h * math.sin(angle_rad2))
-        cv2.fillPoly(drawing_frame, [np.array([center, pt1, pt2], np.int32)], (0, 255, 0)) # Draw the triangle as a filled polygon
-    return directions
+    # Find the line with the longest distance between endpoints
+    def line_length(line):
+        (pt1, pt2), center, angle = line
+        return math.hypot(pt2[0] - pt1[0], pt2[1] - pt1[1])
+    dotted_lines = sorted(dotted_lines, key=line_length, reverse=True)
+    best_line = next(iter(dotted_lines), None)
+
+    if drawing_frame is not None and best_line is not None:
+        line, center, angle = best_line
+        cv2.drawMarker(drawing_frame, center, (0, 255, 0), markerType=cv2.MARKER_CROSS, markerSize=20, thickness=2)
+
+    return best_line
 
 # FLAG VISION STAGES
 def get_flag_distance(frame, drawing_frame=None,
@@ -736,32 +676,34 @@ def get_flag_distance_nb(frame, drawing_frame=None,
         get_flag_distance_nb.worker = None
         get_flag_distance_nb.lock = threading.Lock()
         get_flag_distance_nb.last_result = None
+        get_flag_distance_nb.last_drawing_frame = None
     
     with get_flag_distance_nb.lock:
         result = get_flag_distance_nb.last_result
+        annotated_frame = get_flag_distance_nb.last_drawing_frame
+        
     
     # If processing is not ongoing, process in background
     if get_flag_distance_nb.worker is None or not get_flag_distance_nb.worker.is_alive():
-        def worker_func(frame_copy, pattern_size, square_size):
-            dist = get_flag_distance( frame_copy, drawing_frame=None, pattern_size=pattern_size, square_size=square_size )
+        def worker_func(frame_copy, drawing_frame, pattern_size, square_size):
+            dist = get_flag_distance( frame_copy, drawing_frame=drawing_frame, pattern_size=pattern_size, square_size=square_size )
             with get_flag_distance_nb.lock:
                 get_flag_distance_nb.last_result = dist
+                get_flag_distance_nb.last_drawing_frame = drawing_frame
     
         # Start the worker thread
         t = threading.Thread(
             target=worker_func,
-            args=(frame.copy(), pattern_size, square_size),
+            args=(frame.copy(), np.zeros_like(frame), pattern_size, square_size),
         )
         t.daemon = True
         t.start()
         get_flag_distance_nb.worker = t
     
-    if drawing_frame is not None:
-        # Write the result in the middle of the frame if result is not None
-        if result is not None:
-            cv2.putText(drawing_frame, f"Flag at {result:.2f} m", (drawing_frame.shape[1]//2-100, drawing_frame.shape[0]//2), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2, cv2.LINE_AA)
-        else:
-            cv2.putText(drawing_frame, "Flag not found", (drawing_frame.shape[1]//2-100, drawing_frame.shape[0]//2), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2, cv2.LINE_AA)
+    if drawing_frame is not None and annotated_frame is not None:
+        # Overwrite the drawing_frame pixels with annotated_frame pixels wherever the mask is True.
+        non_black_mask = np.any(annotated_frame != 0, axis=2)
+        drawing_frame[non_black_mask] = annotated_frame[non_black_mask]
 
     return result
 
@@ -853,6 +795,20 @@ def follow_line(frame, drawing_frame=None,
     return throttle, yaw  # Comment this line to disable output
     return 0.0, 0.0
 
+def follow_line_w_intersection(frame, drawing_frame=None,
+    undistort=False,
+):
+    # Attempt to find intersection
+    intersection = find_intersection(frame, drawing_frame=drawing_frame, undistort=undistort)
+
+    # If intersection is found, stop at it
+    if intersection is not None:
+        throttle, yaw = stop_at_intersection(frame, drawing_frame=drawing_frame, intersection=intersection)
+    else:
+        # If no intersection is found, follow the line
+        throttle, yaw = follow_line(frame, drawing_frame=drawing_frame)
+    return throttle, yaw
+
 def follow_line_w_signs(frame, drawing_frame=None, end_action=None):
     # Static variables
     follow_line_w_signs.tmr = follow_line_w_signs.tmr if hasattr(follow_line_w_signs, "tmr") else 0
@@ -891,29 +847,27 @@ def follow_line_w_signs(frame, drawing_frame=None, end_action=None):
 def stop_at_intersection(frame, drawing_frame=None, intersection=None):
     # Static variables
     max_yaw = math.radians(30)
-    max_thr = 0.2
+    max_thr = 0.15
     yaw_threshold = 5.0  # The robot will start translation when the target is this many degrees from the center
     if not hasattr(stop_at_intersection, "pids"):
         stop_at_intersection.pids = {
             "w_pid": PID(2.0, 0, 0.1, setpoint=0, output_limits=(-max_yaw, max_yaw)),
-            "v_pid": PID(0.5, 0, 0.1, setpoint=0.8, output_limits=(-max_thr, max_thr)),
+            "v_pid": PID(0.5, 0, 0.1, setpoint=0.7, output_limits=(-max_thr, max_thr)),
         }
     w_pid = stop_at_intersection.pids["w_pid"]
     v_pid = stop_at_intersection.pids["v_pid"]
     throttle, yaw = 0, 0
 
-    if intersection:
-        back, left, right, front = intersection
-    else:
-        back, left, right, front = identify_intersection(frame, drawing_frame=drawing_frame)
+    # Get the intersection
+    intersection = find_intersection(frame, drawing_frame=drawing_frame) if intersection is None else intersection
 
     # Align the robot with the intersection
-    if back or front:
-        angle = back[2] if back else front[2]
+    if intersection is not None:
+        line, center, angle = intersection
         error = math.radians(angle)
         yaw = w_pid(error)
         alpha = 1 - (abs(error) / yaw_threshold) if abs(error) < yaw_threshold else 0
-        norm_y = back[1][1] / frame.shape[0] if back else 1.0
+        norm_y = center[1] / frame.shape[0]
         measured_distance = (1 - alpha) * v_pid.setpoint + alpha * norm_y
         throttle = v_pid(measured_distance)
 

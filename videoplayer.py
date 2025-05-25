@@ -140,7 +140,9 @@ stoplight_pipeline = [
 intersection_pipeline = [
     ("undistort", lambda: vn.undistort_fisheye(frame, drawing_frame=drawing_frame, zoom=False)),
     ("dark_mask", lambda: vn.get_dark_mask(frame, drawing_frame=drawing_frame)),
-    ("mask_intersection", lambda: vn.find_dots(frame, drawing_frame=drawing_frame)),
+    ("find_dots", lambda: vn.find_dots(frame, drawing_frame=drawing_frame)),
+    ("find_dotted_lines", lambda: vn.find_dotted_lines(frame, drawing_frame=drawing_frame)),
+    ("find_intersection", lambda: vn.find_intersection(frame, drawing_frame=drawing_frame)),
 ]
 
 checkerboard = [
@@ -155,13 +157,13 @@ algorithms = [
 
 if __name__ == "__main__":
     import keybrd
-    vp = VideoPlayer(r"resources\videos\output_2025-05-21_16-14-54.mp4")  # Path to the video file
+    vp = VideoPlayer(r"resources\videos\intersection_clockwise.mp4")  # Path to the video file
     # vp = VideoPlayer(cv2.VideoCapture("http://192.168.137.90:5000/car_cam"))
     # vp = VideoPlayer(cv2.VideoCapture("http://127.0.0.1:5000/car_cam"))
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
-    layers = algorithms
+    layers = intersection_pipeline
     layer = 1
     
     while True:

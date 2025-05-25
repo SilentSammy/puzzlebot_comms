@@ -9,6 +9,7 @@
 + finish implementing adaptive threshold in follow_line
 + make simulated track more noisy (seams and shadows)
 -- implement find_corresponding_point to detect persistent line candidate. for this, make add function called get_persistent_line() to the pipeline
+-- make follow_line speed proportional not only to position on screen but also angle
 -- smarter intersection alignment algorithm
 -- allow streaming estimated pose
 + return 0.0, 0.0 instead of 0,0
@@ -21,7 +22,7 @@
 + allow resetting everything that persists in visual_navigation
 + allow follow_line_w_signs to do something when done
 + check which videos and screenshots are worth keeping
-- use undistorted image for get_flag_distance, then calculate redistorted corners
-- allow get_flag_distance_nb to draw corners in near-real time
-- make identify_stoplight_nb
-- 
+-- use undistorted image for get_flag_distance, then calculate redistorted corners
++ allow get_flag_distance_nb to draw corners in near-real time
+-- make identify_stoplight_nb
+- cache undistortion maps
