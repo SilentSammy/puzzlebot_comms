@@ -116,11 +116,11 @@ class VideoPlayer:
 
 line_detection_pipeline = [
     ("adaptive_thres", lambda: vn.adaptive_thres(frame, drawing_frame)),
-    # ("gray_mask", lambda: get_gray_mask(frame, drawing_frame)),
-    # ("refined_mask", lambda: refined_mask(frame, drawing_frame)),
     ("line_mask", lambda: vn.get_line_mask(frame, drawing_frame)),
     ("line_candidates", lambda: vn.get_line_candidates(frame, drawing_frame)),
+    ("id_lines", lambda: vn.id_line_candidates(frame, drawing_frame)),
     ("middle_line", lambda: vn.get_middle_line(frame, drawing_frame)),
+    ("persistent_line", lambda: vn.get_persistent_line(frame, drawing_frame)),
     ("follow_line", lambda: vn.follow_line(frame, drawing_frame)),
 ]
 
@@ -157,13 +157,13 @@ algorithms = [
 
 if __name__ == "__main__":
     import keybrd
-    vp = VideoPlayer(r"resources\videos\intersection_corner.mp4")  # Path to the video file
+    vp = VideoPlayer(r"resources\videos\track7.mp4")  # Path to the video file
     # vp = VideoPlayer(cv2.VideoCapture("http://192.168.137.90:5000/car_cam"))
     # vp = VideoPlayer(cv2.VideoCapture("http://127.0.0.1:5000/car_cam"))
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
-    layers = intersection_pipeline
+    layers = line_detection_pipeline
     layer = 1
     
     while True:

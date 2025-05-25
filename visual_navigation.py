@@ -5,7 +5,7 @@ import math
 import cv2
 import time
 from collections import deque
-from itertools import combinations
+from itertools import combinations, count
 
 # GLOBAL CAMERA PARAMETERS
 K = np.array([
@@ -40,8 +40,9 @@ def get_contour_line_info(c, fix_vert=True):
     # Ensure cx, cy are ints as well
     cx_int = int(round(cx))
     cy_int = int(round(cy))
+    center = (cx_int, cy_int)
     
-    return pt1, pt2, angle, cx_int, cy_int, length
+    return pt1, pt2, center, angle, length
 
 def group_dotted_lines_simple(points,
                               min_inliers=4,
@@ -111,6 +112,124 @@ def group_dotted_lines_simple(points,
             lines.append(seg_pts)
 
     return lines
+
+def find_corresponding_point(new_point, old_points, threshold):
+    """
+    Returns the first old point that is within the absolute pixel distance 'threshold'
+    from new_point. If none is found, returns None.
+    
+    Parameters:
+        new_point: A sequence (x, y) representing the new point.
+        old_points: An iterable of points (each as a sequence (x, y)) to search through.
+        threshold: Absolute pixel distance threshold (float or int).
+    
+    Returns:
+        A point from old_points that is within the threshold distance of new_point or
+        None if no such point exists.
+    """
+    # Compute distances from new_point to each old point
+    corresponding = sorted(
+        ((pt, ((new_point[0]-pt[0])**2 + (new_point[1]-pt[1])**2)**0.5) for pt in old_points),
+        key=lambda item: item[1]
+    )
+    
+    for pt, dist in corresponding:
+        if dist < threshold:
+            return pt
+    return None
+
+def assign_tracked_ids(new_objs, tracked_objs, id_gen, get_id, set_id, get_pos, upd_obj, threshold_px=100, persist=False):
+    """
+    Updates a collection of tracked objects by matching them with a new set of detected objects.
+    This function is agnostic to the underlying object structure and works with any type, as long
+    as the appropriate accessor, mutator, and updater callables are provided.
+
+    For each object in new_objs, the function:
+      - Extracts a representative position using get_pos.
+      - Compares this position against each object in tracked_objs (via get_pos) using the 
+        find_corresponding_point utility and a threshold (threshold_px) to determine if the 
+        object has been seen before.
+      - If a match is found:
+          • The existing object's ID (obtained via get_id) is assigned to the new object using set_id.
+          • The existing object's data is updated with that from the new object using upd_obj.
+          • The matched object is then removed from further consideration.
+      - If no match is found:
+          • A new unique ID is generated (using id_gen), assigned to the new object using set_id,
+            and the new object is added to tracked_objs.
+    
+    Optionally, if persist is False, objects in tracked_objs that are not present in new_objs are 
+    considered "lost" and removed from tracked_objs; regardless, they are returned in a separate lost_objs list.
+
+    Parameters:
+      new_objs (list): Collection of newly detected objects.
+      tracked_objs (list): Collection of objects currently being tracked.
+      id_gen (callable): Function to generate new unique IDs.
+      get_id (callable): Function to extract an object's unique identifier.
+      set_id (callable): Function to set an object's unique identifier.
+      get_pos (callable): Function that returns a representative position (e.g., a point) for matching.
+      upd_obj (callable): Function that updates an existing object's data with that of a new detection.
+      threshold_px (int, optional): Maximum pixel distance to consider two objects as matching (default is 100).
+      persist (bool, optional): If False, objects not matched in new_objs will be removed from tracked_objs (default is False).
+
+    Returns:
+      tuple: (tracked_objs, lost_objs)
+             tracked_objs: The updated collection of tracked objects.
+             lost_objs: Objects that were not matched in new_objs (i.e. "lost" objects).
+    """
+    # Iterate over the new objects and assign existing or new IDs
+    prev_objs = tracked_objs.copy()
+    for new_obj in new_objs:
+        # Attempt to find a corresponding point in the previous list
+        new_pos = get_pos(new_obj)
+        old_poss = [get_pos(o) for o in prev_objs]
+        corresponding_point = find_corresponding_point(new_pos, old_poss, threshold=threshold_px)
+
+        # It's a previously seen object
+        if corresponding_point is not None:
+            # Use the corresponding point's index to find the corresponding object
+            old_idx = old_poss.index(corresponding_point)
+            corresponding_obj = prev_objs[old_idx]
+
+            # Assign the ID from the old object to the new object
+            set_id(new_obj, get_id(corresponding_obj))
+
+            # Update the old object with the new object's data
+            upd_obj(corresponding_obj, new_obj)
+
+            # Remove the matched object from the previous list so it won't be matched again
+            del prev_objs[old_idx]
+        else:  # It's a new object
+            # Assign a new ID to the new object
+            set_id(new_obj, id_gen())
+            # Add the new object to the list of tracked objects
+            tracked_objs.append(new_obj)
+    
+    # Optionally, remove objects that have left the field of view
+    lost_objs = [o for o in tracked_objs if get_id(o) not in (get_id(o) for o in new_objs)]
+    if not persist:
+        tracked_objs = [o for o in tracked_objs if o not in lost_objs]
+    return tracked_objs, lost_objs
+
+def clear_lost_objects(tracked_objs, lost_objs, lost_timeout, is_lost, get_lost_time, set_lost_time, refind, get_id=None): # get_lost_time, set_lost_time, refind_obj
+    # Remove the lost key from objects that are no longer lost
+    refound_objs = [o for o in tracked_objs if o not in lost_objs and is_lost(o)]
+    for obj in refound_objs:
+        if get_id is not None:
+            print(f"Object {get_id(obj)} refound after being lost for {time.time() - get_lost_time(obj)} seconds")
+        refind(obj)
+
+    # For each lost object, set a lost_time key if it doesn't have one
+    newly_lost_objs = [o for o in lost_objs if not is_lost(o)]
+    for obj in newly_lost_objs:
+        set_lost_time(obj, time.time())
+
+    # For each lost object, if it has a lost_time key, check if it's been lost for more than n seconds
+    for obj in lost_objs:
+        if is_lost(obj):
+            if time.time() - get_lost_time(obj) > lost_timeout:
+                tracked_objs.remove(obj)
+                if get_id is not None:
+                    print(f"Object {get_id(obj)} removed after being lost for {lost_timeout} seconds")
 
 # SHARED VISION STAGES
 def adaptive_thres(frame, drawing_frame=None,
@@ -207,17 +326,66 @@ def get_line_candidates(frame, drawing_frame=None,
 
     lines = [ get_contour_line_info(c) for c in contours ]
     lines = zip(contours, lines)
-    lines = [l for l in lines if l[1][5] > min_length]  # Filter by length
+    lines = [l for l in lines if l[1][4] > min_length]  # Filter by length
     if drawing_frame is not None:
         contours = [l[0] for l in lines]
 
         # Draw the lines on the drawing frame
         for i, l in enumerate(lines):
-            contour, (pt1, pt2, angle, cx, cy, _) = l # Unpack the tuple
+            contour, (pt1, pt2, center, angle, length) = l # Unpack the tuple
             cv2.drawContours(drawing_frame, [contour], -1, (0, 255, 255), 2)
             cv2.line(drawing_frame, pt1, pt2, (0, 255, 255), 2)
-            cv2.putText(drawing_frame, str(i), (int(cx), int(cy)), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
     return zip(*lines) if lines else ([], [])
+
+def id_line_candidates(frame, drawing_frame=None):
+    id_line_candidates.id_gen = id_line_candidates.id_gen if hasattr(id_line_candidates, "id_gen") else count(0)
+    id_line_candidates.old_lines = id_line_candidates.old_lines if hasattr(id_line_candidates, "old_lines") else []
+
+    # Get line candidates
+    contours, lines = get_line_candidates(frame, drawing_frame=drawing_frame)
+    lines = zip(contours, lines)
+
+    # Create a dictionary of line tuples -> contours for easy lookup
+    # line_dict = {tuple(l): c for l, c in zip(lines, contours)}
+
+    # Assign IDs to the new lines based on their proximity to old lines
+    new_lines = [{'id': None, 'line': l, 'contour': c} for c, l in lines]
+    id_line_candidates.old_lines, lost_lines = assign_tracked_ids(
+        new_objs=new_lines,
+        tracked_objs=id_line_candidates.old_lines,
+        id_gen=lambda: next(id_line_candidates.id_gen),
+        get_id=lambda obj: obj['id'],
+        set_id=lambda obj, id: obj.update({'id': id}),
+        get_pos=lambda obj: obj['line'][2], # Use the center of the line as the position
+        upd_obj=lambda old_obj, new_obj: old_obj.update(new_obj),
+        threshold_px=100,
+        persist=True
+    )
+
+    # Clear lost objects
+    clear_lost_objects(
+        tracked_objs=id_line_candidates.old_lines,
+        lost_objs=lost_lines,
+        lost_timeout=0.1,
+        is_lost=lambda obj: 'lost_time' in obj,
+        get_id=lambda obj: obj['id'],
+        get_lost_time=lambda obj: obj['lost_time'],
+        set_lost_time=lambda obj, t: obj.update({'lost_time': t}),
+        refind=lambda obj: obj.pop('lost_time', None)
+    )
+
+    if drawing_frame is not None:
+        # Draw the lines on the drawing frame
+        for i, l in enumerate(id_line_candidates.old_lines):
+            pt1, pt2, center, angle, length = l["line"] # Unpack the tuple
+            cv2.putText(drawing_frame, str(l["id"]), center, cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    
+    ids = [l["id"] for l in id_line_candidates.old_lines]
+    lines = [l["line"] for l in id_line_candidates.old_lines]
+    # contours = [line_dict[tuple(l)] for l in lines]
+    contours = [l["contour"] for l in id_line_candidates.old_lines]
+
+    return contours, lines, ids
 
 def get_middle_line(frame, drawing_frame=None):
     # Helper function to sort the contours
@@ -226,7 +394,8 @@ def get_middle_line(frame, drawing_frame=None):
         # Define the maximum angle for clamping
         max_angle = 80  # Adjust this value as needed
         # Get the direction of the line and its centroid
-        _, _, angle, cx, cy, _ = l
+        _, _, center, angle, _ = l
+        cx = center[0]
         angle = max(min(angle, max_angle), -max_angle)
         # Compute ref_x based on angle: 0° -> center, +max_angle -> left, -max_angle -> right.
         ref_x = (frame_width / 2) + (angle / max_angle) * (frame_width / 2)
@@ -241,10 +410,10 @@ def get_middle_line(frame, drawing_frame=None):
     frame_height, frame_width = frame.shape[:2]
 
     # Get the line candidates
-    contours, lines = get_line_candidates(frame)
-    lines = zip(contours, lines)
+    contours, lines, ids = id_line_candidates(frame, drawing_frame=drawing_frame)
+    lines = zip(contours, lines, ids)
 
-    if contours:
+    if lines:
         # Sort by key
         lines = sorted(lines, key=line_key)
 
@@ -258,6 +427,11 @@ def get_middle_line(frame, drawing_frame=None):
 
         # Return the zipped line
         return best_line
+
+def get_persistent_line(frame, drawing_frame=None):
+    _, best_line, line_id = get_middle_line(frame, drawing_frame=drawing_frame)
+    print(f"Best line ID: {line_id}")
+    pass
 
 # STOPLIGHT EXCLUSIVE VISION STAGES
 def adaptive_color_thresh(frame, drawing_frame=None,
@@ -581,10 +755,8 @@ def find_dots(frame, drawing_frame=None,
             # Filter out quadrilaterals that are too elongated
             if min(w, h) == 0 or max(w, h) / min(w, h) > max_aspect_ratio:
                 continue
-            pt1, pt2, angle, cx, cy, length = get_contour_line_info(approx, fix_vert=False)
-            center = (cx, cy)
+            pt1, pt2, center, angle, length = get_contour_line_info(approx, fix_vert=False)
             dots.append(center)
-            center = (int(cx), int(cy))
             line = ((pt1[0], pt1[1]), (pt2[0], pt2[1]))
             # Optionally, draw the detected dot on the image
             cv2.circle(drawing_frame, center, 5, (0, 0, 255), -1)
@@ -767,7 +939,7 @@ def follow_line(frame, drawing_frame=None,
 
     throttle, yaw = 0, 0
     if line:
-        contour, (pt1, pt2, cx, cy, angle, length) = line
+        contour, (pt1, pt2, center, angle, length) = line
         # Get the X position of the line in the frame.
         frame_height, frame_width = frame.shape[:2]
         x, y, w, h = cv2.boundingRect(contour)
