@@ -387,7 +387,7 @@ def id_line_candidates(frame, drawing_frame=None):
 
     return contours, lines, ids
 
-def get_middle_line(frame, drawing_frame=None):
+def get_middle_line(frame, drawing_frame=None, line_candidates=None):
     # Helper function to sort the contours
     def line_key(l):
         l = l[1]
@@ -406,11 +406,14 @@ def get_middle_line(frame, drawing_frame=None):
         # Return a tuple for sorting: first sort by lowest centroid (i.e. largest cy) then by x error.
         return (x_err)
 
-    # Frame size    
+    # Frame size
     frame_height, frame_width = frame.shape[:2]
 
     # Get the line candidates
-    contours, lines, ids = id_line_candidates(frame, drawing_frame=drawing_frame)
+    if line_candidates is None:
+        contours, lines, ids = id_line_candidates(frame, drawing_frame=drawing_frame)
+    else:
+        contours, lines, ids = line_candidates
     lines = zip(contours, lines, ids)
 
     if lines:
@@ -428,10 +431,55 @@ def get_middle_line(frame, drawing_frame=None):
         # Return the zipped line
         return best_line
 
-def get_persistent_line(frame, drawing_frame=None):
-    _, best_line, line_id = get_middle_line(frame, drawing_frame=drawing_frame)
-    print(f"Best line ID: {line_id}")
-    pass
+def get_persistent_line(frame, drawing_frame=None,
+    lifespan=5,  # Number of frames to keep the line before resetting
+):
+    # Static variables
+    get_persistent_line.chosen_id = get_persistent_line.chosen_id if hasattr(get_persistent_line, "chosen_id") else -1
+    get_persistent_line.upcoming_id = get_persistent_line.upcoming_id if hasattr(get_persistent_line, "upcoming_id") else -1
+    get_persistent_line.upcoming_count = get_persistent_line.upcoming_count if hasattr(get_persistent_line, "upcoming_count") else 0
+
+    # Get the line candidates for this frame
+    line_candidates = id_line_candidates(frame)
+    if not line_candidates[0]:
+        return None
+    
+    # Get the best line for this frame
+    best_contour, best_line, best_id = get_middle_line(frame, line_candidates=line_candidates)
+    
+    # If a new best line is found, reset the upcoming line
+    if best_id != get_persistent_line.upcoming_id:
+        get_persistent_line.upcoming_id = best_id
+        get_persistent_line.upcoming_count = 0
+    
+    # If the best line is the same as the upcoming line, increment the count
+    if best_id == get_persistent_line.upcoming_id:
+        get_persistent_line.upcoming_count += 1
+    
+    # If the upcoming line has been seen for 3 frames, choose it
+    if get_persistent_line.upcoming_count >= lifespan:
+        get_persistent_line.chosen_id = get_persistent_line.upcoming_id
+    
+    # If chosen_id is within the current candidates, use it
+    chosen_line = next(( (c, l, id) for c, l, id in zip(*line_candidates) if id == get_persistent_line.chosen_id ), None)
+    
+    if drawing_frame is not None:
+        # Draw the others in red
+        for contour, line, id in zip(*line_candidates):
+            cv2.drawContours(drawing_frame, [contour], -1, (0, 0, 255), 2)
+            cv2.putText(drawing_frame, str(id), line[2], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        
+        # Draw the chosen line in green
+        if chosen_line is not None:
+            cv2.drawContours(drawing_frame, [chosen_line[0]], -1, (0, 255, 0), 2)
+        
+        # Write the best ID in green
+        if best_line is not None:
+            cv2.putText(drawing_frame, str(best_id), best_line[2], cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    
+    # Return the chosen line, the best line, and the chosen ID
+    if chosen_line is not None:
+        return chosen_line[0], chosen_line[1], get_persistent_line.chosen_id
 
 # STOPLIGHT EXCLUSIVE VISION STAGES
 def adaptive_color_thresh(frame, drawing_frame=None,
@@ -935,11 +983,12 @@ def follow_line(frame, drawing_frame=None,
     follow_line.yaw_pid = follow_line.yaw_pid if hasattr(follow_line, "yaw_pid") else PID(Kp=Kp, Ki=Ki, Kd=Kd, setpoint=0.0, output_limits=(-max_yaw, max_yaw))
 
     # Get and unpck the line
-    line = get_middle_line(frame, drawing_frame=drawing_frame)
+    # line = get_middle_line(frame, drawing_frame=drawing_frame)
+    line = get_persistent_line(frame, drawing_frame=drawing_frame)
 
     throttle, yaw = 0, 0
     if line:
-        contour, (pt1, pt2, center, angle, length) = line
+        contour, (pt1, pt2, center, angle, length), id = line
         # Get the X position of the line in the frame.
         frame_height, frame_width = frame.shape[:2]
         x, y, w, h = cv2.boundingRect(contour)
