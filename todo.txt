@@ -8,14 +8,13 @@
 + calibrate camera
 + finish implementing adaptive threshold in follow_line
 + make simulated track more noisy (seams and shadows)
--- implement find_corresponding_point to detect persistent line candidate. for this, make add function called get_persistent_line() to the pipeline
++ implement find_corresponding_point to detect persistent line candidate. for this, make add function called get_persistent_line() to the pipeline
 -- make follow_line speed proportional not only to position on screen but also angle
 -- smarter intersection alignment algorithm
 -- allow streaming estimated pose
 + return 0.0, 0.0 instead of 0,0
 + separate videoplayer and visual_navigation
-+ don't use undistorted frame
-
++ don't use undistorted frame for estimate_flag_distance
 + make non-blocking flag distance estimator
 + allow videoplayer to either take a path to video or images OR Cap object for live layer viewing
 + rename flag_detector package
@@ -24,5 +23,7 @@
 + check which videos and screenshots are worth keeping
 -- use undistorted image for get_flag_distance, then calculate redistorted corners
 + allow get_flag_distance_nb to draw corners in near-real time
--- make identify_stoplight_nb
 - cache undistortion maps
+- make generic nb polling function. make existing nb functions call it.
+- make identify_stoplight_nb
+- perhaps each algorithm should be a class? With methods to show the vision pipeline, and object level variables instead of pseudo-statics. but how would that work with algorithms that share vision stages?

@@ -1,8 +1,11 @@
+import threading
 import cv2
 import base64
 from openai import OpenAI
 import re
 import json
+import os
+import time
 
 def analyze_image_with_gpt4o(frame, prompt, api_key=None):
     if api_key is None:
@@ -37,9 +40,28 @@ def analyze_image_with_gpt4o(frame, prompt, api_key=None):
 
     # Return the raw text response
     text_response = response.choices[0].message.content
-    # Write the response to a file for debugging
-    with open("response.md", "w") as response_file:
-        response_file.write(text_response)
+
+    # Prepare interaction log and image saving
+    timestamp = int(time.time() * 1000)
+    interaction_dir = "./interactions"
+    os.makedirs(interaction_dir, exist_ok=True)
+    image_filename = f"{timestamp}.png"
+    text_filename = f"{timestamp}.md"
+    image_path = os.path.join(interaction_dir, image_filename)
+    text_path = os.path.join(interaction_dir, text_filename)
+
+    # Save the passed frame as PNG
+    cv2.imwrite(image_path, frame)
+
+    # Build the interaction string including the image path (using markdown image syntax)
+    interaction = f"# Input\n{prompt}\n\n" \
+              f"![Input Image]({image_filename})\n\n" \
+              f"# Output\n{text_response}"
+
+    # Save the interaction log to a markdown file
+    with open(text_path, "w") as response_file:
+        response_file.write(interaction)
+
     return text_response
 
 def extract_json_objects(text):
@@ -63,21 +85,4 @@ def extract_json_objects(text):
     return json_objects
 
 if __name__ == "__main__":
-    # Example usage
-    frame = cv2.imread(r"resources\image.jpg")  # Replace with your image
-    prompt = "What animal is in this image? Return a JSON like: {\"animal\": \"dog\"}"
-    try:
-        text_response = analyze_image_with_gpt4o(frame, prompt)
-
-        json_objects = extract_json_objects(text_response)
-        if json_objects:
-            print(json_objects[0])
-        else:
-            print("No valid JSON objects found in the response.")
-            print(text_response)
-
-            # Save the response to a file
-            with open("response.txt", "w") as response_file:
-                response_file.write(text_response)
-    except Exception as e:
-        print(f"Error: {e}")
+    pass

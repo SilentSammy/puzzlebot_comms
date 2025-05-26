@@ -67,35 +67,9 @@ def reset_nav_mode():
     nav_mode = 1
     print("Control mode: Manual")
 
-def choose_direction(intersection, drawing_frame=None, time_limit=3):
-    if not hasattr(choose_direction, 'tmr'):
-        choose_direction.tmr = time.time()
-
-    dir_labels = ["back", "left", "right", "front"]
-    chosen_idx = -1
-    avail_idxs = [i for i, d in enumerate(intersection) if d is not None]
-    keys = [('k', 'DPAD_DOWN'), ('j', 'DPAD_LEFT'), ('l', 'DPAD_RIGHT'), ('i', 'DPAD_UP')]
-    if drawing_frame is not None:
-        for i, d in enumerate(intersection):
-            if d is not None:
-                cv2.putText(drawing_frame, keys[i][0].upper(), d[1], cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 5)
-
-    for i, key in enumerate(keys):
-        if is_pressed(*key):
-            if i in avail_idxs:
-                chosen_idx = i
-                break
-    
-    # If the time limit is reached, choose a random direction
-    if time_limit >= 0:
-        print(f"Time remaining: {time_limit - (time.time() - choose_direction.tmr):.2f} seconds")
-        if time.time() - choose_direction.tmr > time_limit:
-            chosen_idx = np.random.choice(avail_idxs)
-    
-    if chosen_idx != -1:
-        print(f"Chosen direction: {dir_labels[chosen_idx]}")
-        del choose_direction.tmr
-    return chosen_idx
+def choose_direction(frame):
+    from visual_navigation import choose_direction_nb
+    return choose_direction_nb(frame)
 
 def screenshot(frame):
     import os
@@ -197,7 +171,7 @@ try:
         elif nav_mode == 3:
             throttle, yaw = vn.follow_line(frame, drawing_frame, max_thr=0.2, align_thres=0.3)
         elif nav_mode == 4:
-            throttle, yaw = vn.navigate_track(frame, drawing_frame, undistort=False)
+            throttle, yaw = vn.navigate_track(frame, drawing_frame, undistort=False, decision_func=choose_direction, decision_action=lambda d: print(f"Direction chosen: {d}"))
         
         # Always allow manual control
         thr, yw = manual_control()

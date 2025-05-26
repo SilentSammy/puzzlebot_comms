@@ -15,6 +15,69 @@ K = np.array([
 ], dtype=np.float64)
 D = np.array([-0.02983132, -0.02312677, 0.03447185, -0.02105932], dtype=np.float64)
 
+# GPT DECISION-MAKING
+def choose_direction(frame):
+    from gpt import analyze_image_with_gpt4o, extract_json_objects
+    prompt = (
+        "What is the predominant streetsign present in this image? Ignore far away or skewed signs.\n\n"
+        "Choose from the following options:\n"
+        "- 0: u-turn or back\n"
+        "- 1: left turn\n"
+        "- 2: right turn\n"
+        "- 3: straight or forward\n"
+        "- 4: no sign, or far away\n\n"
+        "Write your reasoning and at the end include a JSON like: {\"sign\": \"0\"}"
+    )
+    sign_id = -1  # Default to no sign
+    try:
+        text_response = analyze_image_with_gpt4o(frame, prompt)
+        json_objects = extract_json_objects(text_response)
+        sign_id = int(json_objects[0]["sign"])
+        sign_id = sign_id if sign_id in [0, 1, 2, 3] else -1
+    except Exception as e:
+        print(f"Error: {e}")
+    return sign_id
+
+def choose_direction_nb(frame):
+    # Pseudo-static variables for background processing
+    if not hasattr(choose_direction_nb, "worker"):
+        choose_direction_nb.worker = None
+        choose_direction_nb.lock = threading.Lock()
+        choose_direction_nb.last_result = -1  # Default sign value
+        choose_direction_nb.consumed = True   # Indicates that no finished result is pending
+    
+    with choose_direction_nb.lock:
+        # Check if a worker is running
+        if (choose_direction_nb.worker is not None) and choose_direction_nb.worker.is_alive():
+            # Worker is running, return -1
+            return -1
+        else:
+            # Worker is not running.
+            if not choose_direction_nb.consumed:
+                # A result is available and not yet consumed.
+                result = choose_direction_nb.last_result
+                choose_direction_nb.consumed = True
+                return result
+            else:
+                # No active worker and result was consumed, so start a new background worker.
+                choose_direction_nb.last_result = -1
+                choose_direction_nb.consumed = False  # New result not yet consumed
+                
+                def worker_func(frame_copy):
+                    res = choose_direction(frame_copy)
+                    with choose_direction_nb.lock:
+                        choose_direction_nb.last_result = res
+                        # leave consumed = False so that the next poll can fetch the new result
+                        
+                t = threading.Thread(
+                    target=worker_func,
+                    args=(frame.copy(),)
+                )
+                t.daemon = True
+                t.start()
+                choose_direction_nb.worker = t
+                return -1
+
 # HELPERS
 def get_contour_line_info(c, fix_vert=True):
     # Fit a line to the contour
@@ -1019,6 +1082,7 @@ def follow_line(frame, drawing_frame=None,
 def navigate_track(frame, drawing_frame=None,
     undistort=False,
     decision_func=None,
+    decision_action=None,
 ):  
     # Static variables
     navigate_track.tmr = navigate_track.tmr if hasattr(navigate_track, "tmr") else 0
@@ -1037,7 +1101,7 @@ def navigate_track(frame, drawing_frame=None,
         (0.15, 0, 2), # Move 30cm forward
     ]
     forward = [ (0.15, 0, 4) ]
-    actions = [backward, turn_left, turn_right, forward]
+    actions = [backward, turn_left, turn_right, forward] # 0 = backward, 1 = left, 2 = right, 3 = forward
     decision_func = decision_func or (lambda frame: 2) # Default decision function
     
     # If an action is in progress execute it.
@@ -1058,9 +1122,15 @@ def navigate_track(frame, drawing_frame=None,
         if not (abs(thr) < 0.02 and abs(thr) < 0.02):
             navigate_track.tmr = time.time() # Reset the timer (keep waiting)
         
-        # If the robot has been stable for n seconds choose a random index from the available directions
+        # If the robot has been stable for n seconds poll the decision function
         if time.time() - navigate_track.tmr > 2:
-            navigate_track.action_index = decision_func(frame) # Poll the decision function
+            print("Polling decision function...")
+            navigate_track.action_index = decision_func(frame)
+            if navigate_track.action_index != -1:
+                action_labels = ["backward", "turn_left", "turn_right", "forward"]
+                print(f"Decision made: {action_labels[navigate_track.action_index]}")
+                if decision_action:
+                    decision_action(navigate_track.action_index)
 
     else:
         # If no intersection is found, follow the line
