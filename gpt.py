@@ -8,9 +8,12 @@ import os
 import time
 
 def analyze_image_with_gpt4o(frame, prompt, api_key=None):
-    if api_key is None:
-        with open("api_key.txt", "r") as file:
-            api_key = file.read().strip()
+    # Read API key from api_key.txt in the script's parent folder
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(script_dir)
+    api_key_path = os.path.join(parent_dir, "api_key.txt")
+    with open(api_key_path, "r") as f:
+        api_key = f.read().strip()
 
     # Encode frame as JPEG
     success, buffer = cv2.imencode('.jpg', frame)
