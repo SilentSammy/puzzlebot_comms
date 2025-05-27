@@ -2,7 +2,6 @@ import sys, os
 sys.path[:0] = [os.path.abspath(os.path.join(os.path.dirname(__file__), p)) for p in ('..', '../..')]
 import math
 import cv2
-from keybrd import is_pressed
 from sim_tools import DifferentialCar, get_image, sim
 import web
 import threading

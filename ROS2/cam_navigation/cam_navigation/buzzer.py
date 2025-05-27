@@ -39,6 +39,34 @@ melodies = {
         (659, 200),  # E5
         (880, 800),  # A5
     ],
+    "rising_tone": [
+        (440, 150),  # A4
+        (523, 150),  # C5
+        (587, 150),  # D5
+        (659, 150),  # E5
+        (784, 150),  # G5
+    ],
+    "falling_tone": [
+        (587, 150),  # D5
+        (523, 150),  # C5
+        (440, 150),  # A4
+        (392, 150),  # G4
+        (349, 150),  # F4
+    ],
+    "3_highs": [
+        (587, 125),
+        (400, 25),
+        (587, 125),
+        (400, 25),
+        (587, 125),
+    ],
+    "3_lows": [
+        (440, 125),
+        (587, 25),
+        (440, 125),
+        (587, 25),
+        (440, 125),
+    ],
 }
 
 # Adjust durations by speed factor
@@ -49,37 +77,27 @@ for melody in melodies.values():
         melody[i] = (freq, duration / speed)
 
 def play_melody_nonblocking(melody):
-    # Static variables
-    if not hasattr(play_melody_nonblocking, "active_thread"):
-        play_melody_nonblocking.active_thread = None
-    if not hasattr(play_melody_nonblocking, "pwm"):
-        buzzer_pin = 32
-        GPIO.setmode(GPIO.BOARD)
-        GPIO.setup(buzzer_pin, GPIO.OUT)
-        pwm = GPIO.PWM(buzzer_pin, 440)  # Default freq, will be changed
-        play_melody_nonblocking.pwm = pwm
-        play_melody_nonblocking.buzzer_pin = buzzer_pin
-        play_melody_nonblocking.pwm_started = False
-
-    # If melody is already playing, reject the call
-    if (play_melody_nonblocking.active_thread is not None and 
-        play_melody_nonblocking.active_thread.is_alive()):
+    # Check if a melody is already playing.
+    if hasattr(play_melody_nonblocking, "active_thread") and \
+       play_melody_nonblocking.active_thread is not None and \
+       play_melody_nonblocking.active_thread.is_alive():
         print("Melody is already playing.")
         return None
 
+    buzzer_pin = 32
+    GPIO.setmode(GPIO.BOARD)
+    GPIO.setup(buzzer_pin, GPIO.OUT)
+    pwm = GPIO.PWM(buzzer_pin, 440)  # Initialized with default freq
+
     def play():
         try:
-            pwm = play_melody_nonblocking.pwm
-            if not play_melody_nonblocking.pwm_started:
-                pwm.start(50)  # 50% duty cycle
-                play_melody_nonblocking.pwm_started = True
+            pwm.start(50)  # 50% duty cycle
             for freq, duration in melody:
                 pwm.ChangeFrequency(freq)
                 time.sleep(duration / 1000.0)
         finally:
             pwm.stop()
-            play_melody_nonblocking.pwm_started = False
-            GPIO.cleanup()
+            GPIO.cleanup(buzzer_pin)
 
     t = threading.Thread(target=play)
     t.start()
@@ -87,5 +105,5 @@ def play_melody_nonblocking(melody):
     return t
 
 if __name__ == "__main__":
-    melody = melodies["super_mario_level_complete"]
+    melody = melodies["custom_success_chime"]
     play_melody_nonblocking(melody)

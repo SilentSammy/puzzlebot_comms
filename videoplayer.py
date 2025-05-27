@@ -7,6 +7,7 @@ import time
 import keybrd
 from collections import deque
 import visual_navigation as vn
+import ml_vision as mv
 
 class VideoPlayer:
     def __init__(self, frame_source):
@@ -150,20 +151,26 @@ checkerboard = [
     ("get_flag_distance_nb", lambda: print(vn.get_flag_distance_nb(frame, drawing_frame=drawing_frame))),
 ]
 
+signs_pipeline = [
+    ("identify_signs", lambda: mv.identify_signs(frame, drawing_frame)),
+    ("identify_signs_nb", lambda: mv.identify_signs_nb(frame, drawing_frame)),
+]
+
 algorithms = [
     ("follow_line", lambda: vn.follow_line(frame, drawing_frame)),
     ("follow_line_w_signs", lambda: vn.follow_line_w_signs(frame, drawing_frame, end_action=lambda: print("Done!"))),
+    ("navigate_track", lambda: vn.navigate_track(frame, drawing_frame, undistort=False))
 ]
 
 if __name__ == "__main__":
     import keybrd
-    vp = VideoPlayer(r"resources\videos\track6.mp4")  # Path to the video file
+    vp = VideoPlayer(r"resources\videos\track_with_signs.mp4")  # Path to the video file
     # vp = VideoPlayer(cv2.VideoCapture("http://192.168.137.90:5000/car_cam"))
     # vp = VideoPlayer(cv2.VideoCapture("http://127.0.0.1:5000/car_cam"))
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
-    layers = line_detection_pipeline
+    layers = signs_pipeline
     layer = 1
     
     while True:

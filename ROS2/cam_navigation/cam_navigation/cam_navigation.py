@@ -1,153 +1,131 @@
+#!/usr/bin/env python3
+
 import threading
 import cv2
-import base64
-from openai import OpenAI
-import re
-import json
-import os
-import time
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Twist
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+from cam_navigation.navigation import navigate
 
-def analyze_image_with_gpt4o(frame, prompt, api_key=None):
-    # Read API key from api_key.txt in the script's parent folder
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(script_dir)
-    api_key_path = os.path.join(parent_dir, "api_key.txt")
-    with open(api_key_path, "r") as f:
-        api_key = f.read().strip()
+def navigate_stub(frame, drawing_frame=None):
+    # Example: draw the frame’s average brightness as text
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    brightness = gray.mean()
+    if drawing_frame is not None:    
+        cv2.putText(drawing_frame, f"Bright: {brightness:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+    print(f"[navigate] Frame brightness: {brightness:.2f}")
+    return 0.0, 0.0
 
-    # Encode frame as JPEG
-    success, buffer = cv2.imencode('.jpg', frame)
-    if not success:
-        raise ValueError("Failed to encode the image.")
+class CamNavigationNode(Node):
+    def __init__(self):
+        super().__init__('cam_navigation')
+        self.get_logger().info("Starting CamNavigationNode")
 
-    # Convert to base64
-    image_base64 = base64.b64encode(buffer).decode('utf-8')
+        # Publishers
+        self.cmd_pub   = self.create_publisher(Twist, '/cmd_vel_safe',     10)
+        self.image_pub = self.create_publisher(Image, '/processed_frame', 10)
 
-    # Initialize OpenAI client
-    client = OpenAI(api_key=api_key)
+        # CvBridge for converting OpenCV → ROS Image
+        self.bridge = CvBridge()
 
-    # Create the request with Vision
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                ]
-            }
-        ],
-        max_tokens=1000  # Optional: control response length
-    )
+        # GStreamer pipeline…
+        self._gst_pipeline = (
+            'nvarguscamerasrc ! '
+            'video/x-raw(memory:NVMM),width=640,height=480,framerate=15/1 ! '
+            'nvvidconv flip-method=0 ! '
+            'video/x-raw,format=BGRx ! '
+            'videoconvert ! '
+            'video/x-raw,format=BGR ! '
+            'appsink drop=true max-buffers=1'
+        )
+        self._cap = None
+        self._cap_lock = threading.Lock()
+        self._open_camera()
 
-    # Return the raw text response
-    text_response = response.choices[0].message.content
+        # 15 Hz timer
+        self.create_timer(1.0 / 15.0, self._on_timer)
 
-    # Prepare interaction log and image saving
-    timestamp = int(time.time() * 1000)
-    interaction_dir = "./interactions"
-    os.makedirs(interaction_dir, exist_ok=True)
-    image_filename = f"{timestamp}.png"
-    text_filename = f"{timestamp}.md"
-    image_path = os.path.join(interaction_dir, image_filename)
-    text_path = os.path.join(interaction_dir, text_filename)
-
-    # Save the passed frame as PNG
-    cv2.imwrite(image_path, frame)
-
-    # Build the interaction string including the image path (using markdown image syntax)
-    interaction = f"# Input\n{prompt}\n\n" \
-              f"![Input Image]({image_filename})\n\n" \
-              f"# Output\n{text_response}"
-
-    # Save the interaction log to a markdown file
-    with open(text_path, "w") as response_file:
-        response_file.write(interaction)
-
-    return text_response
-
-def extract_json_objects(text):
-    # Basic regex pattern for a JSON object
-    # This pattern is quite naive and might not work for all valid JSON objects
-    pattern = r'\{[^\{]*?\}'
-    
-    # Find all matches in the text
-    matches = re.findall(pattern, text, re.DOTALL)
-    
-    # Try to parse each match as JSON
-    json_objects = []
-    for match in matches:
+    def _open_camera(self):
         try:
-            json_obj = json.loads(match)
-            json_objects.append(json_obj)
-        except json.JSONDecodeError:
-            # Skip if it's not a valid JSON object
-            continue
-    
-    return json_objects
+            cap = cv2.VideoCapture(self._gst_pipeline, cv2.CAP_GSTREAMER)
+            if not cap.isOpened():
+                raise RuntimeError("Pipeline failed to open")
+            self._cap = cap
+            self.get_logger().info("Camera opened successfully")
+        except Exception as e:
+            self._cap = None
+            self.get_logger().error(f"Could not open camera: {e}")
 
-# GPT DECISION-MAKING
-def choose_direction(frame):
-    prompt = (
-        "What is the predominant streetsign present in this image? Ignore far away or skewed signs.\n\n"
-        "Choose from the following options:\n"
-        "- 0: u-turn or back\n"
-        "- 1: left turn\n"
-        "- 2: right turn\n"
-        "- 3: straight or forward\n"
-        "- 4: no sign, or far away\n\n"
-        "Write your reasoning and at the end include a JSON like: {\"sign\": 0}"
-    )
-    sign_id = -1  # Default to no sign
+    def _read_frame(self):
+        with self._cap_lock:
+            if self._cap is None or not self._cap.isOpened():
+                self.get_logger().warning("Camera not open")
+                return None
+            ret, frame = self._cap.read()
+        if not ret or frame is None:
+            self.get_logger().warning("Failed to grab frame")
+            return None
+        return frame
+
+    def _on_timer(self):
+        # 1) grab raw frame
+        frame = self._read_frame()
+        if frame is None:
+            return
+
+        # 2) make a drawing copy
+        drawing_frame = frame.copy()
+
+        # 3) your nav logic now takes BOTH
+        throttle, yaw = self.navigate(frame, drawing_frame)
+
+        # 4) publish the annotated frame
+        img_msg = self.bridge.cv2_to_imgmsg(drawing_frame, encoding="bgr8")
+        img_msg.header.stamp = self.get_clock().now().to_msg()
+        self.image_pub.publish(img_msg)
+
+        # 5) publish motion command
+        twist = Twist()
+        twist.linear.x  = float(throttle)
+        twist.angular.z = float(yaw)
+        self.cmd_pub.publish(twist)
+
+    def navigate(self, frame, drawing_frame=None):
+        """
+        Placeholder navigation function.
+
+        Args:
+            frame         (numpy.ndarray): original BGR image
+            drawing_frame (numpy.ndarray): copy you can draw on
+
+        Returns:
+            throttle (float): forward speed [m/s]
+            yaw      (float): turning rate [rad/s]
+        """
+
+        # thr, yaw = navigate_stub(frame, drawing_frame)
+        thr, yaw = navigate(frame, drawing_frame=drawing_frame)
+        return thr, yaw
+
+    def destroy_node(self):
+        # Release the camera
+        with self._cap_lock:
+            if self._cap is not None and self._cap.isOpened():
+                self._cap.release()
+        super().destroy_node()
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = CamNavigationNode()
     try:
-        text_response = analyze_image_with_gpt4o(frame, prompt)
-        json_objects = extract_json_objects(text_response)
-        sign_id = int(json_objects[0]["sign"])
-        sign_id = sign_id if sign_id in [0, 1, 2, 3] else -1
-    except Exception as e:
-        print(f"Error: {e}")
-    return sign_id
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
-def choose_direction_nb(frame):
-    # Pseudo-static variables for background processing
-    if not hasattr(choose_direction_nb, "worker"):
-        choose_direction_nb.worker = None
-        choose_direction_nb.lock = threading.Lock()
-        choose_direction_nb.last_result = -1  # Default sign value
-        choose_direction_nb.consumed = True   # Indicates that no finished result is pending
-    
-    with choose_direction_nb.lock:
-        # Check if a worker is running
-        if (choose_direction_nb.worker is not None) and choose_direction_nb.worker.is_alive():
-            # Worker is running, return -1
-            return -1
-        else:
-            # Worker is not running.
-            if not choose_direction_nb.consumed:
-                # A result is available and not yet consumed.
-                result = choose_direction_nb.last_result
-                choose_direction_nb.consumed = True
-                return result
-            else:
-                # No active worker and result was consumed, so start a new background worker.
-                choose_direction_nb.last_result = -1
-                choose_direction_nb.consumed = False  # New result not yet consumed
-                
-                def worker_func(frame_copy):
-                    res = choose_direction(frame_copy)
-                    with choose_direction_nb.lock:
-                        choose_direction_nb.last_result = res
-                        # leave consumed = False so that the next poll can fetch the new result
-                        
-                t = threading.Thread(
-                    target=worker_func,
-                    args=(frame.copy(),)
-                )
-                t.daemon = True
-                t.start()
-                choose_direction_nb.worker = t
-                return -1
-
-if __name__ == "__main__":
-    pass
+if __name__ == '__main__':
+    main()
