@@ -18,5 +18,10 @@ def navigate(frame, drawing_frame=None):
         elif action_id == 3:
             buzzer.play_melody_nonblocking(buzzer.melodies["3_highs"])
 
-    thr, yaw = vn.navigate_track(frame, undistort=True, drawing_frame=drawing_frame, decision_action=decision_action, decision_func=gpt.choose_direction_nb)
+    thr, yaw = vn.navigate_track(frame, drawing_frame=drawing_frame,
+        undistort=True,
+        decision_action=decision_action,
+        decision_func=gpt.choose_direction_nb,
+        # decision_func=lambda f: 2,
+    )
     return thr, yaw

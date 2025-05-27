@@ -1026,8 +1026,9 @@ def navigate_track(frame, drawing_frame=None,
     navigate_track.action_index = navigate_track.action_index if hasattr(navigate_track, "action_index") else -1
 
     # Define individual actions
-    forw = (0.15, 0, 3.5)               # Move forward
-    left = (0, math.radians(15), 6.5)  # left 90° turn
+    forw = (0.125, 0, 3)          # Move forward
+    small_forw = (0.14, 0, 1)            # Move forward a small distance
+    left = (0, math.radians(15), 6.25)  # left 90° turn
     right = (0, -left[1], left[2])      # right 90° turn
 
     # Define sequences of actions (v, w, t)
@@ -1035,14 +1036,14 @@ def navigate_track(frame, drawing_frame=None,
     turn_left = [
         forw,
         left, # left 90° turn
-        (0.15, 0, 1), # Move forward
+        small_forw
     ]
     turn_right = [
         forw,
         right, # left 90° turn
-        (0.15, 0, 1), # Move forward
+        small_forw
     ]
-    forward = [ (0.15, 0, 4) ]
+    forward = [ (0.125, 0, 4) ]
     actions = [backward, turn_left, turn_right, forward] # 0 = backward, 1 = left, 2 = right, 3 = forward
     decision_func = decision_func or (lambda frame: 1) # Default decision function
     
@@ -1115,7 +1116,7 @@ def follow_line_w_signs(frame, drawing_frame=None, end_action=None):
         return 0, 0
 
 def stop_at_intersection(frame, drawing_frame=None, intersection=None,
-    setpoint=0.55
+    setpoint=0.7
 ):
     # Static variables
     max_yaw = math.radians(30)

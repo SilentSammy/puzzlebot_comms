@@ -13,8 +13,8 @@ from simple_pid import PID
 import visual_navigation as vn
 
 # Connection
-# puzzlebot = PuzzlebotHttpClient("http://192.168.43.125:5000", safe_mode=True)
-puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=True)
+puzzlebot = PuzzlebotHttpClient("http://192.168.137.60:5000", safe_mode=True)
+# puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=True)
 
 # Maximum values for throttle and yaw
 max_yaw = math.radians(180)
