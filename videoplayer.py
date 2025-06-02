@@ -115,64 +115,60 @@ class VideoPlayer:
             
             self._get_frame = get_frame
 
-lf = vn.LineFollower()
+line_foll = vn.LineFollower()
+sl_det = vn.StoplightDetector()
+fl_det = vn.FlagDetector()
+in_det = vn.IntersectionDetector()
+sl_nav = vn.StoplightNavigator(
+    line_follower=line_foll, 
+    stoplight_detector=sl_det, 
+    flag_detector=fl_det
+)
+track_nav = vn.TrackNavigator(
+    line_follower=line_foll,
+    intersection_detector=in_det,
+)
 
 line_detection_pipeline = [
-    ("adaptive_thres", lambda: vn.adaptive_thres(frame, drawing_frame)),
-    ("line_mask", lambda: lf.get_line_mask(frame, drawing_frame)),
-    ("line_candidates", lambda: lf.get_line_candidates(frame, drawing_frame)),
-    ("id_lines", lambda: lf.id_line_candidates(frame, drawing_frame)),
-    ("middle_line", lambda: lf.get_middle_line(frame, drawing_frame)),
-    ("persistent_line", lambda: lf.get_persistent_line(frame, drawing_frame)),
-    ("follow_line", lambda: lf.follow_line(frame, drawing_frame)),
+    ("adaptive_thres", lambda: line_foll.adaptive_thres(frame, drawing_frame)),
+    ("line_mask", lambda: line_foll.get_line_mask(frame, drawing_frame)),
+    ("line_candidates", lambda: line_foll.get_line_candidates(frame, drawing_frame)),
+    ("id_lines", lambda: line_foll.id_line_candidates(frame, drawing_frame)),
+    ("middle_line", lambda: line_foll.get_middle_line(frame, drawing_frame)),
+    ("persistent_line", lambda: line_foll.get_persistent_line(frame, drawing_frame)),
+    ("follow_line", lambda: line_foll.follow_line(frame, drawing_frame)),
 ]
 
 stoplight_pipeline = [
-    ("red", lambda: vn.adaptive_color_thresh( frame, drawing_frame )),
-    ("yellow", lambda: vn.adaptive_color_thresh( frame, drawing_frame=drawing_frame, target_hue=30, hue_tol=12, sat_thresh=80 )),
-    ("green", lambda: vn.adaptive_color_thresh( frame, drawing_frame=drawing_frame, target_hue=65, hue_tol=20, sat_thresh=30 )),
-
-    ("red_ellipses", lambda: vn.ellipse_mask( vn.adaptive_color_thresh( frame ), drawing_frame=drawing_frame )),
-    ("yellow_ellipses", lambda: vn.ellipse_mask( vn.adaptive_color_thresh( frame, target_hue=30, hue_tol=12, sat_thresh=80 ), drawing_frame=drawing_frame,  )),
-    ("green_ellipses", lambda: vn.ellipse_mask( vn.adaptive_color_thresh( frame, target_hue=65, hue_tol=20, sat_thresh=30 ), drawing_frame=drawing_frame )),
-
-    ("stoplight_mask", lambda: vn.stoplight_mask( frame, drawing_frame=drawing_frame )),
-    ("identify_stoplight", lambda: print(vn.identify_stoplight( frame, drawing_frame=drawing_frame ))),
-]
-
-intersection_pipeline = [
-    ("undistort", lambda: vn.undistort_fisheye(frame, drawing_frame=drawing_frame, zoom=False)),
-    ("dark_mask", lambda: vn.get_dark_mask(frame, drawing_frame=drawing_frame)),
-    ("find_dots", lambda: vn.find_dots(frame, drawing_frame=drawing_frame)),
-    ("find_dotted_lines", lambda: vn.find_dotted_lines(frame, drawing_frame=drawing_frame)),
-    ("find_intersection", lambda: vn.find_intersection(frame, drawing_frame=drawing_frame)),
+    ("stoplight_mask", lambda: sl_det.stoplight_mask( frame, drawing_frame=drawing_frame )),
+    ("identify_stoplight", lambda: print(sl_det.identify_stoplight( frame, drawing_frame=drawing_frame ))),
 ]
 
 checkerboard = [
-    ("get_flag_distance", lambda: print(vn.get_flag_distance(frame, drawing_frame=drawing_frame))),
-    ("get_flag_distance_nb", lambda: print(vn.get_flag_distance_nb(frame, drawing_frame=drawing_frame))),
+    ("get_flag_distance", lambda: print(fl_det.get_flag_distance(frame, drawing_frame=drawing_frame))),
+    ("get_flag_distance_nb", lambda: print(fl_det.get_flag_distance_nb(frame, drawing_frame=drawing_frame))),
 ]
 
-signs_pipeline = [
-    ("identify_signs", lambda: mv.identify_signs(frame, drawing_frame)),
-    ("identify_signs_nb", lambda: mv.identify_signs_nb(frame, drawing_frame)),
+intersection_pipeline = [
+    ("dark_mask", lambda: in_det.get_dark_mask(frame, drawing_frame=drawing_frame)),
+    ("find_dots", lambda: in_det.find_dots(frame, drawing_frame=drawing_frame)),
+    ("find_dotted_lines", lambda: in_det.find_dotted_lines(frame, drawing_frame=drawing_frame)),
+    ("find_intersection", lambda: in_det.find_intersection(frame, drawing_frame=drawing_frame)),
 ]
 
 algorithms = [
-    ("follow_line", lambda: vn.follow_line(frame, drawing_frame)),
-    ("follow_line_w_signs", lambda: vn.follow_line_w_signs(frame, drawing_frame, end_action=lambda: print("Done!"))),
-    ("navigate_track", lambda: vn.navigate_track(frame, drawing_frame, undistort=False))
+    ("follow_line", lambda: line_foll.follow_line(frame, drawing_frame)),
+    ("follow_line_w_signs", lambda: sl_nav.navigate(frame, drawing_frame, end_action=lambda: print("Done!"))),
+    ("navigate_track", lambda: track_nav.navigate(frame, drawing_frame))
 ]
 
 if __name__ == "__main__":
     import keybrd
-    vp = VideoPlayer(r"resources\videos\signs_on_track.mp4")  # Path to the video file
-    # vp = VideoPlayer(cv2.VideoCapture("http://192.168.137.90:5000/car_cam"))
-    # vp = VideoPlayer(cv2.VideoCapture("http://127.0.0.1:5000/car_cam"))
+    vp = VideoPlayer(r"resources\videos\intersection_counter.mp4")  # Path to the video file
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
-    layers = line_detection_pipeline
+    layers = intersection_pipeline
     layer = 1
     
     while True:

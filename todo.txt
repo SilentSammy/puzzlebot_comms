@@ -24,8 +24,13 @@
 -- use undistorted image for get_flag_distance, then calculate redistorted corners
 + allow get_flag_distance_nb to draw corners in near-real time
 -- cache undistortion maps
-- make generic nb polling function. make existing nb functions call it.
-- make identify_stoplight_nb
-- perhaps each algorithm should be a class? With methods to show the vision pipeline, and object level variables instead of pseudo-statics. but how would that work with algorithms that share vision stages?
+-- make identify_stoplight_nb
+
++ perhaps each algorithm should be a class? With methods to show the vision pipeline, and object level variables instead of pseudo-statics. but how would that work with algorithms that share vision stages?
++ make LineFollower.adaptive_thres
+- add parameters in inits
+- put end_reached in FlagDetector instead
 - make a dedicated class or function for moving to relative waypoints. that class could internally choose whether to use open or closed loop (with odom) depending on the information that's available.
-- in get_persistent_line, clear objects at the start
+- add authority to LineFollower, so it displays the correct values in the drawing frame
+- make stoplight detector store a list of booleans
+- make generic nb polling function. make existing nb functions call it.
