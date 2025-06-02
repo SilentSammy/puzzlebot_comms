@@ -14,13 +14,12 @@ import visual_navigation as vn
 
 # Connection
 # puzzlebot = PuzzlebotHttpClient("http://192.168.137.95:5000", safe_mode=True)
-puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=True)
+puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=False)
 
 line_foll = vn.LineFollower()
 sl_det = vn.StoplightDetector()
 fl_det = vn.FlagDetector()
-in_det = vn.IntersectionDetector()
-in_det.undistort = False
+in_det = vn.IntersectionDetector(undistort=puzzlebot.base_url.endswith("5000"))
 sl_nav = vn.StoplightNavigator(
     line_follower=line_foll, 
     stoplight_detector=sl_det, 
@@ -155,11 +154,6 @@ try:
         if rising_edge('p'):
             screenshot(frame)
         record(frame if is_toggled('o') else None)
-
-        # Safe mode selection
-        if rising_edge('z', 'Y'):
-            puzzlebot.safe_mode = not puzzlebot.safe_mode
-            print(f"Safe mode: {puzzlebot.safe_mode}")
 
         # Reset navigation
         if rising_edge('r'):

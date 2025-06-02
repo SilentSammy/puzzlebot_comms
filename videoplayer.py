@@ -181,9 +181,6 @@ if __name__ == "__main__":
         frame = vp.get_frame()
         drawing_frame = frame.copy()
 
-        if re('r'):
-            vn.reset()
-
         # Print the current frame
         print(f"Frame {vp.frame_idx}/{vp.frame_count} ", end='')
 

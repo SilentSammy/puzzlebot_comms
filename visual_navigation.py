@@ -8,41 +8,60 @@ from collections import deque
 from itertools import combinations, count
 
 class LineFollower:
-    def __init__(self):
+    def __init__(
+        self,
+        blur_kernel_size=(7, 7),
+        adaptive_method=cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        threshold_type=cv2.THRESH_BINARY_INV,
+        block_size=141,
+        c_value=6,
+        v_fov=0.4,
+        morph_kernel_size=(5, 5),
+        erode_iterations=4,
+        dilate_iterations=6,
+        min_area=2000,
+        min_length=90,
+        lifespan=5,
+        max_yaw=60,  # degrees
+        max_thr=0.2,
+        align_thres=0.2,
+        Kp = 0.6,
+        Ki = 0,
+        Kd = 0.1
+    ):
         # Adaptive thresholding parameters
-        self.blur_kernel_size=(7, 7)  # Kernel size for GaussianBlur
-        self.adaptive_method=cv2.ADAPTIVE_THRESH_GAUSSIAN_C  # Adaptive thresholding method
-        self.threshold_type=cv2.THRESH_BINARY_INV  # Thresholding type
-        self.block_size=141  # Size of the neighborhood used for thresholding (must be odd)
-        self.c_value=6  # Constant subtracted from the mean or weighted mean (the higher the value, the darker the pixels need to be to be considered black)
+        self.blur_kernel_size = blur_kernel_size
+        self.adaptive_method = adaptive_method
+        self.threshold_type = threshold_type
+        self.block_size = block_size
+        self.c_value = c_value
 
         # Line mask parameters
-        self.v_fov = 0.4  # Bottom field of view (0.4 = 40% of the frame height)
-        self.morph_kernel = np.ones((5, 5), np.uint8)  # Kernel for morphological operations
-        self.erode_iterations = 4  # Number of iterations for erosion
-        self.dilate_iterations = 6  # Number of iterations for dilation
-    
+        self.v_fov = v_fov
+        self.morph_kernel = np.ones(morph_kernel_size, np.uint8)
+        self.erode_iterations = erode_iterations
+        self.dilate_iterations = dilate_iterations
+
         # Line candidate parameters
-        self.min_area=2000
-        self.min_length=90
-    
-        # Line tracking parameters
-        self.id_gen = count(0)  # ID generator for line candidates
-        self.old_lines = []  # List of old lines for tracking
+        self.min_area = min_area
+        self.min_length = min_length
+
+        # Line tracking static variables
+        self._id_gen = count(0)  # ID generator for line candidates
+        self._old_lines = []  # List of old lines for tracking
 
         # Persistent line parameters
-        self.lifespan = 5  # Number of frames to keep the line before resetting
+        self.lifespan = lifespan  # Number of frames to keep the line before resetting
 
         # Persistent line static variables
-        self.chosen_id = -1  # ID of the currently chosen line
-        self.upcoming_id = -1  # ID of the upcoming line
-        self.upcoming_count = 0  # Count of frames the upcoming line has been seen
+        self._chosen_id = -1  # ID of the currently chosen line
+        self._upcoming_id = -1  # ID of the upcoming line
+        self._upcoming_count = 0  # Count of frames the upcoming line has been seen
 
         # PID controller for line following
-        self.yaw_pid = PID(Kp=0.6, Ki=0, Kd=0.1, setpoint=0.0, output_limits=(-math.radians(60), math.radians(60)))
-        self.max_yaw = math.radians(60)  # Maximum yaw in radians
-        self.max_thr = 0.2  # Maximum throttle
-        self.align_thres = 0.2  # Throttle will be max_thr when aligned, 0 at the threshold, and negative below the threshold.
+        self.max_thr = max_thr  # Maximum throttle
+        self.align_thres = align_thres  # Throttle will be max_thr when aligned, 0 at the threshold, and negative below the threshold.
+        self.yaw_pid = PID(Kp=Kp, Ki=Ki, Kd=Kd, setpoint=0.0, output_limits=(-math.radians(max_yaw), math.radians(max_yaw)))
 
     def adaptive_thres(self, frame, drawing_frame=None):
         mask = adaptive_thres(frame, drawing_frame=drawing_frame,
@@ -97,10 +116,10 @@ class LineFollower:
 
         # Assign IDs to the new lines based on their proximity to old lines
         new_lines = [{'id': None, 'line': l, 'contour': c} for c, l in lines]
-        self.old_lines, lost_lines = assign_tracked_ids(
+        self._old_lines, lost_lines = assign_tracked_ids(
             new_objs=new_lines,
-            tracked_objs=self.old_lines,
-            id_gen=lambda: next(self.id_gen),
+            tracked_objs=self._old_lines,
+            id_gen=lambda: next(self._id_gen),
             get_id=lambda obj: obj['id'],
             set_id=lambda obj, id: obj.update({'id': id}),
             get_pos=lambda obj: obj['line'][2], # Use the center of the line as the position
@@ -111,7 +130,7 @@ class LineFollower:
 
         # Clear lost objects
         clear_lost_objects(
-            tracked_objs=self.old_lines,
+            tracked_objs=self._old_lines,
             lost_objs=lost_lines,
             lost_timeout=0.1,
             is_lost=lambda obj: 'lost_time' in obj,
@@ -123,14 +142,14 @@ class LineFollower:
 
         if drawing_frame is not None:
             # Draw the lines on the drawing frame
-            for i, l in enumerate(self.old_lines):
+            for i, l in enumerate(self._old_lines):
                 pt1, pt2, center, angle, length = l["line"] # Unpack the tuple
                 cv2.putText(drawing_frame, str(l["id"]), center, cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         
-        ids = [l["id"] for l in self.old_lines]
-        lines = [l["line"] for l in self.old_lines]
+        ids = [l["id"] for l in self._old_lines]
+        lines = [l["line"] for l in self._old_lines]
         # contours = [line_dict[tuple(l)] for l in lines]
-        contours = [l["contour"] for l in self.old_lines]
+        contours = [l["contour"] for l in self._old_lines]
 
         return contours, lines, ids
 
@@ -188,20 +207,20 @@ class LineFollower:
         best_contour, best_line, best_id = self.get_middle_line(frame, line_candidates=line_candidates)
         
         # If a new best line is found, reset the upcoming line
-        if best_id != self.upcoming_id:
-            self.upcoming_id = best_id
-            self.upcoming_count = 0
+        if best_id != self._upcoming_id:
+            self._upcoming_id = best_id
+            self._upcoming_count = 0
         
         # If the best line is the same as the upcoming line, increment the count
-        if best_id == self.upcoming_id:
-            self.upcoming_count += 1
+        if best_id == self._upcoming_id:
+            self._upcoming_count += 1
         
         # If the upcoming line has been seen for 3 frames, choose it
-        if self.upcoming_count >= self.lifespan:
-            self.chosen_id = self.upcoming_id
+        if self._upcoming_count >= self.lifespan:
+            self._chosen_id = self._upcoming_id
         
         # If chosen_id is within the current candidates, use it
-        chosen_line = next(( (c, l, id) for c, l, id in zip(*line_candidates) if id == self.chosen_id ), None)
+        chosen_line = next(( (c, l, id) for c, l, id in zip(*line_candidates) if id == self._chosen_id ), None)
         
         if drawing_frame is not None:
             # Draw the others in red
@@ -219,7 +238,7 @@ class LineFollower:
         
         # Return the chosen line, the best line, and the chosen ID
         if chosen_line is not None:
-            return chosen_line[0], chosen_line[1], self.chosen_id
+            return chosen_line[0], chosen_line[1], self._chosen_id
 
     def follow_line(self, frame, drawing_frame=None):
         """ Follow the line in the frame """
@@ -235,7 +254,7 @@ class LineFollower:
             frame_height, frame_width = frame.shape[:2]
             x, y, w, h = cv2.boundingRect(contour)
             center_x = x + w // 2
-            normalized_x = (center_x - (frame_width/2)) / (frame_width/2)
+            normalized_x = (center_x - (frame_width/2)) / (frame_width/2) # Normalize to [-1, 1] range
             
             # Adjust yaw to keep the line centered in the frame.
             yaw = self.yaw_pid(normalized_x)
@@ -259,33 +278,60 @@ class LineFollower:
         return 0.0, 0.0
 
 class StoplightDetector:
-    def __init__(self):
+    def __init__(self,
+                 red_target_hue=0,
+                 red_hue_tol=10,
+                 red_sat_thresh=60,
+                 yellow_hue=30,
+                 yellow_hue_tol=12,
+                 yellow_sat_thresh=80,
+                 green_hue=65,
+                 green_hue_tol=20,
+                 green_sat_thresh=30,
+                 morph_kernel_size=(3, 3),
+                 erode_iterations=3,
+                 dilate_iterations=2,
+                 min_fill_ratio=0.85,
+                 max_outside_ratio=0.15,
+                 max_tilt=0.5,
+                 max_norm_major=0.8,
+                 min_norm_major=0.02,
+                 edge_thres_x=0.3,
+                 edge_thres_y=0.0,
+                 chain_length=4,
+                 max_chain_gap=1,
+                 latest_colors_maxlen=3
+        ):
+
         # Adaptive color thresholding parameters
-        self.yellow_hue = 30
-        self.yellow_hue_tol = 12
-        self.yellow_sat_thresh = 80
-        self.green_hue = 65
-        self.green_hue_tol = 20
-        self.green_sat_thresh = 30
+        self.red_target_hue = red_target_hue
+        self.red_hue_tol = red_hue_tol
+        self.red_sat_thresh = red_sat_thresh
+        self.yellow_hue = yellow_hue
+        self.yellow_hue_tol = yellow_hue_tol
+        self.yellow_sat_thresh = yellow_sat_thresh
+        self.green_hue = green_hue
+        self.green_hue_tol = green_hue_tol
+        self.green_sat_thresh = green_sat_thresh
 
         # Ellipse mask parameters
-        self.morph_kernel = np.ones((3, 3), np.uint8)
-        self.erode_iterations = 3
-        self.dilate_iterations = 2
-        self.min_fill_ratio = 0.85
-        self.max_outside_ratio=0.15
-        self.max_tilt = 0.5
-        self.max_norm_major = 0.8
-        self.min_norm_major = 0.02
+        self.morph_kernel = np.ones(morph_kernel_size, np.uint8)
+        self.erode_iterations = erode_iterations
+        self.dilate_iterations = dilate_iterations
+        self.min_fill_ratio = min_fill_ratio
+        self.max_outside_ratio = max_outside_ratio
+        self.max_tilt = max_tilt
+        self.max_norm_major = max_norm_major
+        self.min_norm_major = min_norm_major
 
         # Identify stoplight params
-        self.edge_thres_x=0.3 # Fraction of the frame width
-        self.edge_thres_y=0.0 # Fraction of the frame height
-        self.chain_length=4   # Consecutive frames to consider a color as seen
-        self.max_chain_gap=1  # Maximum gap in frames to consider a color as seen
+        self.edge_thres_x = edge_thres_x  # Fraction of the frame width
+        self.edge_thres_y = edge_thres_y  # Fraction of the frame height
+        self.chain_length = chain_length  # Consecutive frames to consider a color as seen
+        self.max_chain_gap = max_chain_gap  # Maximum gap in frames to consider a color as seen
 
         # Identify stoplight static variables
-        self.latest_colors = deque(maxlen=30)
+        self.latest_colors = deque(maxlen=latest_colors_maxlen)
 
     def ellipse_mask(self, mask, drawing_frame=None):
         # Erode and dilate to remove noise and fill gaps.
@@ -359,7 +405,7 @@ class StoplightDetector:
         return valid_mask, ellipses
 
     def stoplight_mask(self, frame, drawing_frame=None):
-        red_mask = adaptive_color_thresh( frame )
+        red_mask = adaptive_color_thresh( frame, target_hue=self.red_target_hue, hue_tol=self.red_hue_tol, sat_thresh=self.red_sat_thresh )
         yellow_mask = adaptive_color_thresh( frame, target_hue=self.yellow_hue, hue_tol=self.yellow_hue_tol, sat_thresh=self.yellow_sat_thresh )
         green_mask = adaptive_color_thresh( frame, target_hue=self.green_hue, hue_tol=self.green_hue_tol, sat_thresh=self.green_sat_thresh )
 
@@ -477,16 +523,19 @@ class StoplightDetector:
         return confirmed_color
 
 class FlagDetector:
-    def __init__(self):
+    def __init__(self,
+            pattern_size=(4, 3),
+            square_size=0.025,
+        ):
         # Flag detection parameters
-        self.pattern_size = (4, 3)  # Chessboard pattern size
-        self.square_size = 0.025  # Size of each square in meters
+        self.pattern_size = pattern_size    # Chessboard pattern size
+        self.square_size = square_size      # Size of each square in meters
 
         # Multi-threading static variables
-        self.worker = None
-        self.lock = threading.Lock()
-        self.last_result = None
-        self.last_drawing_frame = None
+        self._worker = None
+        self._lock = threading.Lock()
+        self._last_result = None
+        self._last_drawing_frame = None
 
     def get_flag_distance(self, frame, drawing_frame=None):
         """
@@ -522,18 +571,18 @@ class FlagDetector:
         return dist
     
     def get_flag_distance_nb(self, frame, drawing_frame=None):
-        with self.lock:
-            result = self.last_result
-            annotated_frame = self.last_drawing_frame
+        with self._lock:
+            result = self._last_result
+            annotated_frame = self._last_drawing_frame
             
         
         # If processing is not ongoing, process in background
-        if self.worker is None or not self.worker.is_alive():
+        if self._worker is None or not self._worker.is_alive():
             def worker_func(frame_copy, drawing_frame):
                 dist = self.get_flag_distance( frame_copy, drawing_frame=drawing_frame )
-                with self.lock:
-                    self.last_result = dist
-                    self.last_drawing_frame = drawing_frame
+                with self._lock:
+                    self._last_result = dist
+                    self._last_drawing_frame = drawing_frame
         
             # Start the worker thread
             t = threading.Thread(
@@ -542,7 +591,7 @@ class FlagDetector:
             )
             t.daemon = True
             t.start()
-            self.worker = t
+            self._worker = t
         
         if drawing_frame is not None and annotated_frame is not None:
             # Overwrite the drawing_frame pixels with annotated_frame pixels wherever the mask is True.
@@ -593,30 +642,45 @@ class StoplightNavigator:
             return 0, 0
 
 class IntersectionDetector:
-    def __init__(self):
+    def __init__(self,
+        undistort=True,
+        v_fov=0.55,
+        morph_kernel_size=(3, 3),
+        erode_iterations=3,
+        dilate_iterations=2,
+        max_aspect_ratio=10.0,
+        min_area=20,
+        ep=0.035,
+        min_points=5,
+        setpoint=0.55,
+        max_yaw=30.0,
+        max_thr=0.15,
+        w_Kp=2.0,
+        w_Ki=0.0,
+        w_Kd=0.1,
+        v_Kp=0.5,
+        v_Ki=0.0,
+        v_Kd=0.1,
+    ):
         # Dark mask parameters
-        self.undistort=True
-        self.v_fov = 0.55  # Bottom field of view (0.6 = 60% of the frame height)
-        self.morph_kernel = np.ones((3, 3), np.uint8)  # Kernel for morphological operations
-        self.erode_iterations = 3  # Number of iterations for erosion
-        self.dilate_iterations = 2  # Number of iterations for dilation
+        self.undistort = undistort
+        self.v_fov = v_fov  # Bottom field of view (0.6 = 60% of the frame height)
+        self.morph_kernel = np.ones(morph_kernel_size, np.uint8)  # Kernel for morphological operations
+        self.erode_iterations = erode_iterations  # Number of iterations for erosion
+        self.dilate_iterations = dilate_iterations  # Number of iterations for dilation
 
         # Find dots parameters
-        self.max_aspect_ratio = 10.0
-        self.min_area = 20
-        self.ep = 0.035 # Approximation factor for contour approximation
+        self.max_aspect_ratio = max_aspect_ratio
+        self.min_area = min_area
+        self.ep = ep  # Approximation factor for contour approximation
 
         # Dotted line parameters
-        self.min_points=5  # Minimum number of points to consider a line
+        self.min_points = min_points  # Minimum number of points to consider a line
 
         # Stopping parameters
         self.yaw_threshold = 5.0
-        self.setpoint = 0.55
-        self.max_yaw = math.radians(30)
-        self.max_thr = 0.15
-        self.w_pid = PID(2.0, 0, 0.1, setpoint=0, output_limits=(-self.max_yaw, self.max_yaw))
-        self.v_pid = PID(0.5, 0, 0.1, setpoint=self.setpoint, output_limits=(-self.max_thr, self.max_thr))
-        PID(0.5, 0, 0.1, setpoint=self.setpoint, output_limits=(-self.max_thr, self.max_thr))
+        self.w_pid = PID(w_Kp, w_Ki, w_Kd, setpoint=0, output_limits=(-max_yaw, max_yaw))
+        self.v_pid = PID(v_Kp, v_Ki, v_Kd, setpoint=setpoint, output_limits=(-max_thr, max_thr))
 
     def get_dark_mask(self, frame, drawing_frame=None):
         # Undistort the frame if needed
