@@ -240,10 +240,12 @@ class LineFollower:
         if chosen_line is not None:
             return chosen_line[0], chosen_line[1], self._chosen_id
 
-    def follow_line(self, frame, drawing_frame=None):
+    def follow_line(self, frame, drawing_frame=None, authority=1.0):
         """ Follow the line in the frame """
+        # Ensure authority is within [0, 1] range
+        authority = max(0, min(authority, 1.0))
 
-        # Get and unpck the line
+        # Get and unpack the line
         # line = get_middle_line(frame, drawing_frame=drawing_frame)
         line = self.get_persistent_line(frame, drawing_frame=drawing_frame)
 
@@ -257,13 +259,14 @@ class LineFollower:
             normalized_x = (center_x - (frame_width/2)) / (frame_width/2) # Normalize to [-1, 1] range
             
             # Adjust yaw to keep the line centered in the frame.
-            yaw = self.yaw_pid(normalized_x)
+            yaw = self.yaw_pid(normalized_x * authority)  # Use authority to scale the PID output
             
             # Decrease throttle as the line moves away from the center.
             alignment = 1 - abs(normalized_x) # 1 when centered, 0 when at the edge.
             x =  ((alignment - self.align_thres) / (1 - self.align_thres)) # From 1 to -1
             thr_factor = x
             throttle = self.max_thr * thr_factor
+            throttle *= authority  # Scale throttle by authority
 
             # Optionally draw stats on the frame
             if drawing_frame is not None:
@@ -300,7 +303,7 @@ class StoplightDetector:
                  edge_thres_y=0.0,
                  chain_length=4,
                  max_chain_gap=1,
-                 latest_colors_maxlen=3
+                 latest_colors_maxlen=30
         ):
 
         # Adaptive color thresholding parameters
@@ -640,12 +643,11 @@ class StoplightNavigator:
             if stoplight is not None and stoplight != 1: # If red or green, remember it
                 self.stoplight = stoplight
             speed_factor = (stoplight or self.stoplight) * 0.5
+            print(f"Stoplight: {stoplight}, Speed factor: {speed_factor:.2f}")
 
             self.fd.flag_reached(frame, drawing_frame=drawing_frame, non_blocking=True)
             if not self.fd.end_reached:
-                thr, yaw = self.lf.follow_line(frame, drawing_frame=drawing_frame)
-                thr *= speed_factor
-                yaw *= speed_factor
+                thr, yaw = self.lf.follow_line(frame, drawing_frame=drawing_frame, authority=speed_factor)
             elif self.end_action:
                 self.end_action()
         else:
