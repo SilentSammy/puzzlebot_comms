@@ -7,242 +7,6 @@ import time
 from collections import deque
 from itertools import combinations, count
 
-class LineFollower:
-    def __init__(self):
-        # Line mask parameters
-        self.v_fov = 0.4  # Bottom field of view (0.4 = 40% of the frame height)
-        self.morph_kernel = np.ones((5, 5), np.uint8)  # Kernel for morphological operations
-        self.erode_iterations = 4  # Number of iterations for erosion
-        self.dilate_iterations = 6  # Number of iterations for dilation
-    
-        # Line candidate parameters
-        self.min_area=2000
-        self.min_length=90
-    
-        # Line tracking parameters
-        self.id_gen = count(0)  # ID generator for line candidates
-        self.old_lines = []  # List of old lines for tracking
-
-        # Persistent line parameters
-        self.lifespan = 5  # Number of frames to keep the line before resetting
-
-        # Persistent line static variables
-        self.chosen_id = -1  # ID of the currently chosen line
-        self.upcoming_id = -1  # ID of the upcoming line
-        self.upcoming_count = 0  # Count of frames the upcoming line has been seen
-
-        # PID controller for line following
-        self.yaw_pid = PID(Kp=0.6, Ki=0, Kd=0.1, setpoint=0.0, output_limits=(-math.radians(60), math.radians(60)))
-        self.max_yaw = math.radians(60)  # Maximum yaw in radians
-        self.max_thr = 0.2  # Maximum throttle
-        self.align_thres = 0.2  # Throttle will be max_thr when aligned, 0 at the threshold, and negative below the threshold.
-
-    def get_line_mask(self, frame, drawing_frame=None):
-        # Get mask
-        mask = adaptive_thres(frame)
-
-        # Only keep the lower part of the mask, filling the upper part with black.
-        mask[:int(frame.shape[:2][0] * (1-self.v_fov)), :] = 0
-
-        # Erode and dilate to remove noise and fill gaps.
-        mask = cv2.erode(mask, kernel=self.morph_kernel, iterations=self.erode_iterations)
-        mask = cv2.dilate(mask, kernel=self.morph_kernel, iterations=self.dilate_iterations)
-
-        # Overwrite the drawing frame with the mask for debugging.
-        if drawing_frame is not None:
-            drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-        return mask
-    
-    def get_line_candidates(self, frame, drawing_frame=None):
-        mask = self.get_line_mask(frame)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours = [c for c in contours if cv2.contourArea(c) > self.min_area]
-
-        lines = [ get_contour_line_info(c) for c in contours ]
-        lines = zip(contours, lines)
-        lines = [l for l in lines if l[1][4] > self.min_length]  # Filter by length
-        if drawing_frame is not None:
-            contours = [l[0] for l in lines]
-
-            # Draw the lines on the drawing frame
-            for i, l in enumerate(lines):
-                contour, (pt1, pt2, center, angle, length) = l # Unpack the tuple
-                cv2.drawContours(drawing_frame, [contour], -1, (0, 255, 255), 2)
-                cv2.line(drawing_frame, pt1, pt2, (0, 255, 255), 2)
-        return zip(*lines) if lines else ([], [])
-
-    def id_line_candidates(self, frame, drawing_frame=None):
-        # Get line candidates
-        contours, lines = self.get_line_candidates(frame, drawing_frame=drawing_frame)
-        lines = zip(contours, lines)
-
-        # Create a dictionary of line tuples -> contours for easy lookup
-        # line_dict = {tuple(l): c for l, c in zip(lines, contours)}
-
-        # Assign IDs to the new lines based on their proximity to old lines
-        new_lines = [{'id': None, 'line': l, 'contour': c} for c, l in lines]
-        self.old_lines, lost_lines = assign_tracked_ids(
-            new_objs=new_lines,
-            tracked_objs=self.old_lines,
-            id_gen=lambda: next(self.id_gen),
-            get_id=lambda obj: obj['id'],
-            set_id=lambda obj, id: obj.update({'id': id}),
-            get_pos=lambda obj: obj['line'][2], # Use the center of the line as the position
-            upd_obj=lambda old_obj, new_obj: old_obj.update(new_obj),
-            threshold_px=100,
-            persist=True
-        )
-
-        # Clear lost objects
-        clear_lost_objects(
-            tracked_objs=self.old_lines,
-            lost_objs=lost_lines,
-            lost_timeout=0.1,
-            is_lost=lambda obj: 'lost_time' in obj,
-            get_id=lambda obj: obj['id'],
-            get_lost_time=lambda obj: obj['lost_time'],
-            set_lost_time=lambda obj, t: obj.update({'lost_time': t}),
-            refind=lambda obj: obj.pop('lost_time', None)
-        )
-
-        if drawing_frame is not None:
-            # Draw the lines on the drawing frame
-            for i, l in enumerate(self.old_lines):
-                pt1, pt2, center, angle, length = l["line"] # Unpack the tuple
-                cv2.putText(drawing_frame, str(l["id"]), center, cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        
-        ids = [l["id"] for l in self.old_lines]
-        lines = [l["line"] for l in self.old_lines]
-        # contours = [line_dict[tuple(l)] for l in lines]
-        contours = [l["contour"] for l in self.old_lines]
-
-        return contours, lines, ids
-
-    def get_middle_line(self, frame, drawing_frame=None, line_candidates=None):
-        # Helper function to sort the contours
-        def line_key(l):
-            l = l[1]
-            # Define the maximum angle for clamping
-            max_angle = 80  # Adjust this value as needed
-            # Get the direction of the line and its centroid
-            _, _, center, angle, _ = l
-            cx = center[0]
-            angle = max(min(angle, max_angle), -max_angle)
-            # Compute ref_x based on angle: 0° -> center, +max_angle -> left, -max_angle -> right.
-            ref_x = (frame_width / 2) + (angle / max_angle) * (frame_width / 2)
-            # Draw ref_x on the frame for debugging
-            # cv2.line(drawing_frame, (int(ref_x), 0), (int(ref_x), frame_height), (0, 0, 255), 2)
-            # Compute the error between the centroid and our adjusted reference.
-            x_err = abs(cx - ref_x)
-            # Return a tuple for sorting: first sort by lowest centroid (i.e. largest cy) then by x error.
-            return (x_err)
-
-        # Frame size
-        frame_height, frame_width = frame.shape[:2]
-
-        # Get the line candidates
-        if line_candidates is None:
-            contours, lines, ids = self.id_line_candidates(frame, drawing_frame=drawing_frame)
-        else:
-            contours, lines, ids = line_candidates
-        lines = zip(contours, lines, ids)
-
-        if lines:
-            # Sort by key
-            lines = sorted(lines, key=line_key)
-
-            # Choose the best candidate
-            best_line = lines[0]
-            
-            # Draw the best candidate in green and the others in red.
-            if drawing_frame is not None:
-                cv2.drawContours(drawing_frame, [best_line[0]], -1, (0, 255, 0), 2)
-                cv2.drawContours(drawing_frame, [c[0] for c in lines[1:]], -1, (0, 0, 255), 2)
-
-            # Return the zipped line
-            return best_line
-
-    def get_persistent_line(self, frame, drawing_frame=None):
-        # Get the line candidates for this frame
-        line_candidates = self.id_line_candidates(frame)
-        if not line_candidates[0]:
-            return None
-        
-        # Get the best line for this frame
-        best_contour, best_line, best_id = self.get_middle_line(frame, line_candidates=line_candidates)
-        
-        # If a new best line is found, reset the upcoming line
-        if best_id != self.upcoming_id:
-            self.upcoming_id = best_id
-            self.upcoming_count = 0
-        
-        # If the best line is the same as the upcoming line, increment the count
-        if best_id == self.upcoming_id:
-            self.upcoming_count += 1
-        
-        # If the upcoming line has been seen for 3 frames, choose it
-        if self.upcoming_count >= self.lifespan:
-            self.chosen_id = self.upcoming_id
-        
-        # If chosen_id is within the current candidates, use it
-        chosen_line = next(( (c, l, id) for c, l, id in zip(*line_candidates) if id == self.chosen_id ), None)
-        
-        if drawing_frame is not None:
-            # Draw the others in red
-            for contour, line, id in zip(*line_candidates):
-                cv2.drawContours(drawing_frame, [contour], -1, (0, 0, 255), 2)
-                cv2.putText(drawing_frame, str(id), line[2], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            
-            # Draw the chosen line in green
-            if chosen_line is not None:
-                cv2.drawContours(drawing_frame, [chosen_line[0]], -1, (0, 255, 0), 2)
-            
-            # Write the best ID in green
-            if best_line is not None:
-                cv2.putText(drawing_frame, str(best_id), best_line[2], cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        
-        # Return the chosen line, the best line, and the chosen ID
-        if chosen_line is not None:
-            return chosen_line[0], chosen_line[1], self.chosen_id
-
-    def follow_line(self, frame, drawing_frame=None):
-        """ Follow the line in the frame """
-
-        # Get and unpck the line
-        # line = get_middle_line(frame, drawing_frame=drawing_frame)
-        line = self.get_persistent_line(frame, drawing_frame=drawing_frame)
-
-        throttle, yaw = 0, 0
-        if line:
-            contour, (pt1, pt2, center, angle, length), id = line
-            # Get the X position of the line in the frame.
-            frame_height, frame_width = frame.shape[:2]
-            x, y, w, h = cv2.boundingRect(contour)
-            center_x = x + w // 2
-            normalized_x = (center_x - (frame_width/2)) / (frame_width/2)
-            
-            # Adjust yaw to keep the line centered in the frame.
-            yaw = self.yaw_pid(normalized_x)
-            
-            # Decrease throttle as the line moves away from the center.
-            alignment = 1 - abs(normalized_x) # 1 when centered, 0 when at the edge.
-            x =  ((alignment - self.align_thres) / (1 - self.align_thres)) # From 1 to -1
-            thr_factor = x
-            throttle = self.max_thr * thr_factor
-
-            # Optionally draw stats on the frame
-            if drawing_frame is not None:
-                cv2.line(drawing_frame, (center_x, 0), (center_x, frame_height), (255, 0, 0), 2)
-                cv2.putText(drawing_frame, f"v: {throttle:.2f} m/s", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
-                cv2.putText(drawing_frame, f"w: {math.degrees(yaw):.2f} deg/s", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
-        else:
-            # Write "Searching for line" on the frame
-            cv2.putText(drawing_frame, "Searching for line", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
-        
-        return throttle, yaw  # Comment this line to disable output
-        return 0.0, 0.0
-
-
 # GLOBAL CAMERA PARAMETERS
 K = np.array([
     [394.32766428,   0.,         343.71433623],
@@ -529,6 +293,193 @@ def undistort_fisheye(frame, drawing_frame=None, zoom=True):
 
     # otherwise just return the image
     return undistorted, None
+
+# LINE FOLLOWING EXCLUSIVE VISION STAGES
+def get_line_mask(frame, drawing_frame=None,
+    v_fov = 0.4,  # Bottom field of view (0.4 = 40% of the frame height)
+    morph_kernel = np.ones((5, 5), np.uint8),  # Kernel for morphological operations
+    erode_iterations = 4,  # Number of iterations for erosion
+    dilate_iterations = 6,  # Number of iterations for dilation
+):
+    # Get mask
+    mask = adaptive_thres(frame)
+
+    # Only keep the lower part of the mask, filling the upper part with black.
+    mask[:int(frame.shape[:2][0] * (1-v_fov)), :] = 0
+
+    # Erode and dilate to remove noise and fill gaps.
+    mask = cv2.erode(mask, kernel=morph_kernel, iterations=erode_iterations)
+    mask = cv2.dilate(mask, kernel=morph_kernel, iterations=dilate_iterations)
+
+    # Overwrite the drawing frame with the mask for debugging.
+    if drawing_frame is not None:
+        drawing_frame[:] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    return mask
+
+def get_line_candidates(frame, drawing_frame=None,
+    min_area=2000,
+    min_length=90,
+):
+    mask = get_line_mask(frame)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours = [c for c in contours if cv2.contourArea(c) > min_area]
+
+    lines = [ get_contour_line_info(c) for c in contours ]
+    lines = zip(contours, lines)
+    lines = [l for l in lines if l[1][4] > min_length]  # Filter by length
+    if drawing_frame is not None:
+        contours = [l[0] for l in lines]
+
+        # Draw the lines on the drawing frame
+        for i, l in enumerate(lines):
+            contour, (pt1, pt2, center, angle, length) = l # Unpack the tuple
+            cv2.drawContours(drawing_frame, [contour], -1, (0, 255, 255), 2)
+            cv2.line(drawing_frame, pt1, pt2, (0, 255, 255), 2)
+    return zip(*lines) if lines else ([], [])
+
+def id_line_candidates(frame, drawing_frame=None):
+    id_line_candidates.id_gen = id_line_candidates.id_gen if hasattr(id_line_candidates, "id_gen") else count(0)
+    id_line_candidates.old_lines = id_line_candidates.old_lines if hasattr(id_line_candidates, "old_lines") else []
+
+    # Get line candidates
+    contours, lines = get_line_candidates(frame, drawing_frame=drawing_frame)
+    lines = zip(contours, lines)
+
+    # Create a dictionary of line tuples -> contours for easy lookup
+    # line_dict = {tuple(l): c for l, c in zip(lines, contours)}
+
+    # Assign IDs to the new lines based on their proximity to old lines
+    new_lines = [{'id': None, 'line': l, 'contour': c} for c, l in lines]
+    id_line_candidates.old_lines, lost_lines = assign_tracked_ids(
+        new_objs=new_lines,
+        tracked_objs=id_line_candidates.old_lines,
+        id_gen=lambda: next(id_line_candidates.id_gen),
+        get_id=lambda obj: obj['id'],
+        set_id=lambda obj, id: obj.update({'id': id}),
+        get_pos=lambda obj: obj['line'][2], # Use the center of the line as the position
+        upd_obj=lambda old_obj, new_obj: old_obj.update(new_obj),
+        threshold_px=100,
+        persist=True
+    )
+
+    # Clear lost objects
+    clear_lost_objects(
+        tracked_objs=id_line_candidates.old_lines,
+        lost_objs=lost_lines,
+        lost_timeout=0.1,
+        is_lost=lambda obj: 'lost_time' in obj,
+        get_id=lambda obj: obj['id'],
+        get_lost_time=lambda obj: obj['lost_time'],
+        set_lost_time=lambda obj, t: obj.update({'lost_time': t}),
+        refind=lambda obj: obj.pop('lost_time', None)
+    )
+
+    if drawing_frame is not None:
+        # Draw the lines on the drawing frame
+        for i, l in enumerate(id_line_candidates.old_lines):
+            pt1, pt2, center, angle, length = l["line"] # Unpack the tuple
+            cv2.putText(drawing_frame, str(l["id"]), center, cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    
+    ids = [l["id"] for l in id_line_candidates.old_lines]
+    lines = [l["line"] for l in id_line_candidates.old_lines]
+    # contours = [line_dict[tuple(l)] for l in lines]
+    contours = [l["contour"] for l in id_line_candidates.old_lines]
+
+    return contours, lines, ids
+
+def get_middle_line(frame, drawing_frame=None, line_candidates=None):
+    # Helper function to sort the contours
+    def line_key(l):
+        l = l[1]
+        # Define the maximum angle for clamping
+        max_angle = 80  # Adjust this value as needed
+        # Get the direction of the line and its centroid
+        _, _, center, angle, _ = l
+        cx = center[0]
+        angle = max(min(angle, max_angle), -max_angle)
+        # Compute ref_x based on angle: 0° -> center, +max_angle -> left, -max_angle -> right.
+        ref_x = (frame_width / 2) + (angle / max_angle) * (frame_width / 2)
+        # Draw ref_x on the frame for debugging
+        # cv2.line(drawing_frame, (int(ref_x), 0), (int(ref_x), frame_height), (0, 0, 255), 2)
+        # Compute the error between the centroid and our adjusted reference.
+        x_err = abs(cx - ref_x)
+        # Return a tuple for sorting: first sort by lowest centroid (i.e. largest cy) then by x error.
+        return (x_err)
+
+    # Frame size
+    frame_height, frame_width = frame.shape[:2]
+
+    # Get the line candidates
+    if line_candidates is None:
+        contours, lines, ids = id_line_candidates(frame, drawing_frame=drawing_frame)
+    else:
+        contours, lines, ids = line_candidates
+    lines = zip(contours, lines, ids)
+
+    if lines:
+        # Sort by key
+        lines = sorted(lines, key=line_key)
+
+        # Choose the best candidate
+        best_line = lines[0]
+        
+        # Draw the best candidate in green and the others in red.
+        if drawing_frame is not None:
+            cv2.drawContours(drawing_frame, [best_line[0]], -1, (0, 255, 0), 2)
+            cv2.drawContours(drawing_frame, [c[0] for c in lines[1:]], -1, (0, 0, 255), 2)
+
+        # Return the zipped line
+        return best_line
+
+def get_persistent_line(frame, drawing_frame=None,
+    lifespan=5,  # Number of frames to keep the line before resetting
+):
+    # Static variables
+    get_persistent_line.chosen_id = get_persistent_line.chosen_id if hasattr(get_persistent_line, "chosen_id") else -1
+    get_persistent_line.upcoming_id = get_persistent_line.upcoming_id if hasattr(get_persistent_line, "upcoming_id") else -1
+    get_persistent_line.upcoming_count = get_persistent_line.upcoming_count if hasattr(get_persistent_line, "upcoming_count") else 0
+
+    # Get the line candidates for this frame
+    line_candidates = id_line_candidates(frame)
+    if not line_candidates[0]:
+        return None
+    
+    # Get the best line for this frame
+    best_contour, best_line, best_id = get_middle_line(frame, line_candidates=line_candidates)
+    
+    # If a new best line is found, reset the upcoming line
+    if best_id != get_persistent_line.upcoming_id:
+        get_persistent_line.upcoming_id = best_id
+        get_persistent_line.upcoming_count = 0
+    
+    # If the best line is the same as the upcoming line, increment the count
+    if best_id == get_persistent_line.upcoming_id:
+        get_persistent_line.upcoming_count += 1
+    
+    # If the upcoming line has been seen for 3 frames, choose it
+    if get_persistent_line.upcoming_count >= lifespan:
+        get_persistent_line.chosen_id = get_persistent_line.upcoming_id
+    
+    # If chosen_id is within the current candidates, use it
+    chosen_line = next(( (c, l, id) for c, l, id in zip(*line_candidates) if id == get_persistent_line.chosen_id ), None)
+    
+    if drawing_frame is not None:
+        # Draw the others in red
+        for contour, line, id in zip(*line_candidates):
+            cv2.drawContours(drawing_frame, [contour], -1, (0, 0, 255), 2)
+            cv2.putText(drawing_frame, str(id), line[2], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        
+        # Draw the chosen line in green
+        if chosen_line is not None:
+            cv2.drawContours(drawing_frame, [chosen_line[0]], -1, (0, 255, 0), 2)
+        
+        # Write the best ID in green
+        if best_line is not None:
+            cv2.putText(drawing_frame, str(best_id), best_line[2], cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    
+    # Return the chosen line, the best line, and the chosen ID
+    if chosen_line is not None:
+        return chosen_line[0], chosen_line[1], get_persistent_line.chosen_id
 
 # STOPLIGHT EXCLUSIVE VISION STAGES
 def adaptive_color_thresh(frame, drawing_frame=None,
@@ -1019,6 +970,51 @@ def sequence(actions=None, when_done=None, speed_factor=1):
     throttle, yaw = 0, 0
     throttle, yaw, _ = action
     return throttle, yaw
+
+def follow_line(frame, drawing_frame=None,
+    Kp=0.6, Ki=0, Kd=0.1,       # PID parameters
+    max_yaw=math.radians(60),   # Maximum yaw in radians
+    max_thr=0.2,                # Maximum throttle
+    align_thres = 0.2           # Throttle will be max_thr when aligned, 0 at the threshold, and negative below the threshold.
+):
+    """ Follow the line in the frame """
+
+    # Static variables
+    follow_line.yaw_pid = follow_line.yaw_pid if hasattr(follow_line, "yaw_pid") else PID(Kp=Kp, Ki=Ki, Kd=Kd, setpoint=0.0, output_limits=(-max_yaw, max_yaw))
+
+    # Get and unpck the line
+    # line = get_middle_line(frame, drawing_frame=drawing_frame)
+    line = get_persistent_line(frame, drawing_frame=drawing_frame)
+
+    throttle, yaw = 0, 0
+    if line:
+        contour, (pt1, pt2, center, angle, length), id = line
+        # Get the X position of the line in the frame.
+        frame_height, frame_width = frame.shape[:2]
+        x, y, w, h = cv2.boundingRect(contour)
+        center_x = x + w // 2
+        normalized_x = (center_x - (frame_width/2)) / (frame_width/2)
+        
+        # Adjust yaw to keep the line centered in the frame.
+        yaw = follow_line.yaw_pid(normalized_x)
+        
+        # Decrease throttle as the line moves away from the center.
+        alignment = 1 - abs(normalized_x) # 1 when centered, 0 when at the edge.
+        x =  ((alignment - align_thres) / (1 - align_thres)) # From 1 to -1
+        thr_factor = x
+        throttle = max_thr * thr_factor
+
+        # Optionally draw stats on the frame
+        if drawing_frame is not None:
+            cv2.line(drawing_frame, (center_x, 0), (center_x, frame_height), (255, 0, 0), 2)
+            cv2.putText(drawing_frame, f"v: {throttle:.2f} m/s", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+            cv2.putText(drawing_frame, f"w: {math.degrees(yaw):.2f} deg/s", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+    else:
+        # Write "Searching for line" on the frame
+        cv2.putText(drawing_frame, "Searching for line", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+    
+    return throttle, yaw  # Comment this line to disable output
+    return 0.0, 0.0
 
 def navigate_track(frame, drawing_frame=None,
     undistort=False,

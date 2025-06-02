@@ -13,8 +13,9 @@ from simple_pid import PID
 import visual_navigation as vn
 
 # Connection
-puzzlebot = PuzzlebotHttpClient("http://192.168.137.60:5000", safe_mode=True)
-# puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=True)
+# puzzlebot = PuzzlebotHttpClient("http://192.168.137.60:5000", safe_mode=True)
+puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=True)
+lf = vn.LineFollower()  # Create an instance of the LineFollower class
 
 # Maximum values for throttle and yaw
 max_yaw = math.radians(180)
@@ -169,7 +170,7 @@ try:
         if nav_mode == 2:
             throttle, yaw = vn.follow_line_w_signs(frame, drawing_frame, end_action=lambda: print("Done!"))
         elif nav_mode == 3:
-            throttle, yaw = vn.follow_line(frame, drawing_frame, max_thr=0.2, align_thres=0.3)
+            throttle, yaw = lf.follow_line(frame, drawing_frame)
         elif nav_mode == 4:
             throttle, yaw = vn.navigate_track(frame, drawing_frame, undistort=False, decision_func=choose_direction, decision_action=lambda d: print(f"Direction chosen: {d}"))
         

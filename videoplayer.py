@@ -7,7 +7,7 @@ import time
 import keybrd
 from collections import deque
 import visual_navigation as vn
-import ml_vision as mv
+# import ml_vision as mv
 
 class VideoPlayer:
     def __init__(self, frame_source):
@@ -115,14 +115,16 @@ class VideoPlayer:
             
             self._get_frame = get_frame
 
+lf = vn.LineFollower()
+
 line_detection_pipeline = [
     ("adaptive_thres", lambda: vn.adaptive_thres(frame, drawing_frame)),
-    ("line_mask", lambda: vn.get_line_mask(frame, drawing_frame)),
-    ("line_candidates", lambda: vn.get_line_candidates(frame, drawing_frame)),
-    ("id_lines", lambda: vn.id_line_candidates(frame, drawing_frame)),
-    ("middle_line", lambda: vn.get_middle_line(frame, drawing_frame)),
-    ("persistent_line", lambda: vn.get_persistent_line(frame, drawing_frame)),
-    ("follow_line", lambda: vn.follow_line(frame, drawing_frame)),
+    ("line_mask", lambda: lf.get_line_mask(frame, drawing_frame)),
+    ("line_candidates", lambda: lf.get_line_candidates(frame, drawing_frame)),
+    ("id_lines", lambda: lf.id_line_candidates(frame, drawing_frame)),
+    ("middle_line", lambda: lf.get_middle_line(frame, drawing_frame)),
+    ("persistent_line", lambda: lf.get_persistent_line(frame, drawing_frame)),
+    ("follow_line", lambda: lf.follow_line(frame, drawing_frame)),
 ]
 
 stoplight_pipeline = [
@@ -164,13 +166,13 @@ algorithms = [
 
 if __name__ == "__main__":
     import keybrd
-    vp = VideoPlayer(r"resources\videos\track_with_signs.mp4")  # Path to the video file
+    vp = VideoPlayer(r"resources\videos\signs_on_track.mp4")  # Path to the video file
     # vp = VideoPlayer(cv2.VideoCapture("http://192.168.137.90:5000/car_cam"))
     # vp = VideoPlayer(cv2.VideoCapture("http://127.0.0.1:5000/car_cam"))
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
-    layers = signs_pipeline
+    layers = line_detection_pipeline
     layer = 1
     
     while True:
