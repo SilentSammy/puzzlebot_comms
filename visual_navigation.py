@@ -641,15 +641,15 @@ class StoplightNavigator:
                 self.stoplight = stoplight
             speed_factor = (stoplight or self.stoplight) * 0.5
 
+            self.fd.flag_reached(frame, drawing_frame=drawing_frame, non_blocking=True)
             if not self.fd.end_reached:
                 thr, yaw = self.lf.follow_line(frame, drawing_frame=drawing_frame)
                 thr *= speed_factor
                 yaw *= speed_factor
-            else:
-                if self.end_action:
-                    self.end_action()
-
-        self.fd.flag_reached(frame, drawing_frame=drawing_frame, non_blocking=True)
+            elif self.end_action:
+                self.end_action()
+        else:
+            self.fd.flag_reached(frame, drawing_frame=drawing_frame, non_blocking=True)
         return thr, yaw
 
 class IntersectionDetector:

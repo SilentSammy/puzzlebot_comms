@@ -23,7 +23,8 @@ in_det = vn.IntersectionDetector(undistort=puzzlebot.base_url.endswith("5000"))
 sl_nav = vn.StoplightNavigator(
     line_follower=line_foll, 
     stoplight_detector=sl_det, 
-    flag_detector=fl_det
+    flag_detector=fl_det,
+    end_action=lambda: print("Stoplight navigation completed!")  # Optional end action
 )
 track_nav = vn.TrackNavigator(
     line_follower=line_foll,
