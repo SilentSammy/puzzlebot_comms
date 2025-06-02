@@ -526,6 +526,7 @@ class FlagDetector:
     def __init__(self,
             pattern_size=(4, 3),
             square_size=0.025,
+            dist_thres=0.4,
         ):
         # Flag detection parameters
         self.pattern_size = pattern_size    # Chessboard pattern size
@@ -536,6 +537,9 @@ class FlagDetector:
         self._lock = threading.Lock()
         self._last_result = None
         self._last_drawing_frame = None
+
+        self.dist_thres = dist_thres  # Distance threshold in meters to consider the flag close
+        self.end_reached = False  # Flag to indicate if the end has been reached
 
     def get_flag_distance(self, frame, drawing_frame=None):
         """
@@ -600,11 +604,27 @@ class FlagDetector:
 
         return result
 
+    def flag_reached(self, frame, drawing_frame=None, non_blocking=True):
+        if not self.end_reached:
+            if non_blocking:
+                dist = self.get_flag_distance_nb(frame, drawing_frame=drawing_frame)
+            else:
+                dist = self.get_flag_distance(frame, drawing_frame=drawing_frame)
+                
+            if dist is not None and dist <= self.dist_thres:
+                self.end_reached = True
+        
+        if drawing_frame is not None and self.end_reached:
+            cv2.putText( drawing_frame, "Flag reached", (drawing_frame.shape[1] // 2 - 80, drawing_frame.shape[0] // 2), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA )
+        
+        return self.end_reached
+
 class StoplightNavigator:
-    def __init__(self, line_follower=None, stoplight_detector=None, flag_detector=None):
+    def __init__(self, line_follower=None, stoplight_detector=None, flag_detector=None, end_action=None):
         self.lf = line_follower or LineFollower()
         self.sd = stoplight_detector or StoplightDetector()
         self.fd = flag_detector or FlagDetector()
+        self.end_action=end_action
         
         # Static variables
         self.tmr = 0  # Timer for stoplight detection
@@ -612,34 +632,25 @@ class StoplightNavigator:
         self.end_reached = False  # Flag to indicate if the end has been reached
         self.stoplight
     
-    def navigate(self, frame, drawing_frame=None, end_action=None):
-        if not self.end_reached:
+    def navigate(self, frame, drawing_frame=None):
+        thr = yaw = 0
+        if not self.fd.end_reached:
             # Determine the speed factor based on the stoplight.
             stoplight = self.sd.identify_stoplight(frame, drawing_frame=drawing_frame)
             if stoplight is not None and stoplight != 1: # If red or green, remember it
                 self.stoplight = stoplight
             speed_factor = (stoplight or self.stoplight) * 0.5
-            
-            # Check if the flag is close
-            dist = self.fd.get_flag_distance_nb(frame, drawing_frame=drawing_frame)
-            flag_is_close = dist is not None and dist < 0.5
-            self.end_reached = flag_is_close
 
-            if not self.end_reached:
+            if not self.fd.end_reached:
                 thr, yaw = self.lf.follow_line(frame, drawing_frame=drawing_frame)
                 thr *= speed_factor
                 yaw *= speed_factor
             else:
-                if end_action:
-                    end_action()
-                thr = 0
-                yaw = 0
+                if self.end_action:
+                    self.end_action()
 
-            return thr, yaw
-        else:
-            if drawing_frame is not None:
-                cv2.putText( drawing_frame, "Flag reached", (drawing_frame.shape[1] // 2 - 80, drawing_frame.shape[0] // 2), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA )
-            return 0, 0
+        self.fd.flag_reached(frame, drawing_frame=drawing_frame, non_blocking=True)
+        return thr, yaw
 
 class IntersectionDetector:
     def __init__(self,

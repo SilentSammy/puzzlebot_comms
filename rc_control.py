@@ -175,7 +175,7 @@ try:
         
         # Control
         if nav_mode == 2:
-            throttle, yaw = sl_nav.navigate(frame, drawing_frame, end_action=lambda: print("Done!"))
+            throttle, yaw = sl_nav.navigate(frame, drawing_frame)
         elif nav_mode == 3:
             throttle, yaw = line_foll.follow_line(frame, drawing_frame)
         elif nav_mode == 4:
