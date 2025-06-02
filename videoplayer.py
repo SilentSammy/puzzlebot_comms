@@ -164,7 +164,7 @@ algorithms = [
 
 if __name__ == "__main__":
     import keybrd
-    vp = VideoPlayer(r"http://127.0.0.1:5001/car_cam")  # Path to the video file
+    vp = VideoPlayer(r"resources\videos\stoplight_w_flag.mp4")  # Path to the video file
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled

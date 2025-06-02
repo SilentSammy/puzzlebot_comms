@@ -303,7 +303,6 @@ class StoplightDetector:
                  edge_thres_y=0.0,
                  chain_length=4,
                  max_chain_gap=1,
-                 latest_colors_maxlen=30
         ):
 
         # Adaptive color thresholding parameters
@@ -334,7 +333,10 @@ class StoplightDetector:
         self.max_chain_gap = max_chain_gap  # Maximum gap in frames to consider a color as seen
 
         # Identify stoplight static variables
-        self.latest_colors = deque(maxlen=latest_colors_maxlen)
+        color_history_len = chain_length + max_chain_gap
+        self.red_history = deque(maxlen=color_history_len)
+        self.yellow_history = deque(maxlen=color_history_len)
+        self.green_history = deque(maxlen=color_history_len)
 
     def ellipse_mask(self, mask, drawing_frame=None):
         # Erode and dilate to remove noise and fill gaps.
@@ -453,44 +455,9 @@ class StoplightDetector:
             
             return near_x or near_y
         
-        def ellipse_key(color_coded_ellipse):
-            color_code, ((center_x, center_y), (axis1, axis2), angle) = color_coded_ellipse
-            return axis1
-
-        def check_latest_colors():
-            if len(self.latest_colors) < self.chain_length:
-                return None
-
-            latest = list(self.latest_colors)
-            count_valid = 0     # count of valid (non-None) frames of the candidate color
-            gap_count = 0       # count of consecutive None frames
-            candidate = None
-
-            # Process from the newest to older frames
-            for color in reversed(latest):
-                if color is None:
-                    gap_count += 1
-                    # If gaps exceed allowed, break out.
-                    if gap_count > self.max_chain_gap:
-                        break
-                else:
-                    if candidate is None:
-                        candidate = color  # first valid color establishes our candidate
-                        count_valid = 1
-                    elif color == candidate:
-                        count_valid += 1
-                    else:
-                        # a different valid color disrupts the chain
-                        break
-
-                # Check if we've seen at least the required total frames
-                if (count_valid + gap_count) >= self.chain_length:
-                    # Only accept candidate if valid frames are sufficient
-                    if count_valid >= (self.chain_length - self.max_chain_gap):
-                        return candidate
-
-            return None
-
+        def is_confirmed(history):
+            return sum(history) >= (self.chain_length - self.max_chain_gap)
+        
         # Process the frame
         mask, red_ellipses, yellow_ellipses, green_ellipses = self.stoplight_mask(frame)
         if drawing_frame is not None:
@@ -506,24 +473,31 @@ class StoplightDetector:
         
         # Filter out only red ellipses that are near the edge of the frame
         red_ellipses_fltrd = [e for e in red_ellipses if not is_near_edge(e)]
-        if len(red_ellipses_fltrd) != len(red_ellipses):
-            # print("Some red ellipses are near the edge of the frame. Ignoring them.")
-            pass
+        
+        # Update color histories with booleans
+        self.red_history.append(bool(red_ellipses_fltrd))
+        self.yellow_history.append(bool(yellow_ellipses))
+        self.green_history.append(bool(green_ellipses))
 
-        ellipses = [(0, e) for e in red_ellipses_fltrd]
-        ellipses.extend([(1, e) for e in yellow_ellipses])
-        ellipses.extend([(2, e) for e in green_ellipses])
-
-        # Get the largest if any
-        ellipses = sorted(ellipses, key=ellipse_key, reverse=True)
-        largest = next(iter(ellipses), None)
-
-        seen_color = largest[0] if largest is not None else None
-        self.latest_colors.append(seen_color)
-        confirmed_color = check_latest_colors()
-        # print(f"Seen: {seen_color}, Confirmed: {confirmed_color}")
-
-        return confirmed_color
+        # Find all confirmed colors and their counts
+        confirmed = []
+        ellipses_by_color = [red_ellipses_fltrd, yellow_ellipses, green_ellipses]
+        for color, history in enumerate([self.red_history, self.yellow_history, self.green_history]):
+            if is_confirmed(history):
+                count = sum(history)
+                confirmed.append((color, count))
+        # Return the confirmed color with the most appearances
+        if confirmed:
+            confirmed.sort(key=lambda x: x[1], reverse=True)
+            chosen_color = confirmed[0][0]
+            ellipses = ellipses_by_color[chosen_color]
+            # Draw a white ellipse around the largest ellipse of the confirmed color
+            if ellipses and drawing_frame is not None:
+                # Find the largest by major axis
+                largest = max(ellipses, key=lambda e: max(e[1]))
+                cv2.ellipse(drawing_frame, largest, (255, 255, 255), 3)
+            return chosen_color
+        return None
 
 class FlagDetector:
     def __init__(self,
@@ -643,7 +617,6 @@ class StoplightNavigator:
             if stoplight is not None and stoplight != 1: # If red or green, remember it
                 self.stoplight = stoplight
             speed_factor = (stoplight or self.stoplight) * 0.5
-            print(f"Stoplight: {stoplight}, Speed factor: {speed_factor:.2f}")
 
             self.fd.flag_reached(frame, drawing_frame=drawing_frame, non_blocking=True)
             if not self.fd.end_reached:
