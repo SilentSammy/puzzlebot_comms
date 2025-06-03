@@ -29,6 +29,11 @@ sl_nav = vn.StoplightNavigator(
 track_nav = vn.TrackNavigator(
     line_follower=line_foll,
     intersection_detector=in_det,
+    decision_func=lambda frame: 2,
+)
+ol_con = vn.OpenLoopController(
+    linear_factor=1.0,
+    angular_factor=1.0,
 )
 
 # Maximum values for throttle and yaw
@@ -143,7 +148,14 @@ def record(frame):
     # Append the frame to the video file
     record.vw.write(frame)
 
-nav_mode = 1
+modes = [
+    (('1', 'X'), "Manual Control", lambda: None),
+    (('2', 'A'), "Follow Line with Signs", lambda: sl_nav.navigate(frame, drawing_frame)),
+    (('3',), "Follow Line", lambda: line_foll.follow_line(frame, drawing_frame)),
+    (('4',), "Follow Line with Intersection", lambda: track_nav.navigate(frame, drawing_frame)),
+    (('5'), "Stop at intersection", lambda: in_det.stop_at_intersection(frame, drawing_frame)),
+]
+mode = 0
 try:
     while True:
         # Inputs and outputs
@@ -156,31 +168,18 @@ try:
             screenshot(frame)
         record(frame if is_toggled('o') else None)
 
-        # Reset navigation
-        if rising_edge('r'):
-            reset_nav_mode()
-
-        # Control mode selection
-        if rising_edge('1', 'X'):
-            nav_mode = 1
-            print("Control mode: Manual")
-        elif rising_edge('2', 'A'):
-            nav_mode = 2
-            print("Control mode: Follow line with signs")
-        elif rising_edge('3'):
-            nav_mode = 3
-            print("Control mode: Follow line")
-        elif rising_edge('4'):
-            nav_mode = 4
-            print("Control mode: Follow line with intersection")
+        # Choose mode
+        for i, m in enumerate(modes):
+            if rising_edge(*m[0]):
+                mode = i
+                print(f"Control mode: {m[1]}")
         
-        # Control
-        if nav_mode == 2:
-            throttle, yaw = sl_nav.navigate(frame, drawing_frame)
-        elif nav_mode == 3:
-            throttle, yaw = line_foll.follow_line(frame, drawing_frame)
-        elif nav_mode == 4:
-            throttle, yaw = track_nav.navigate(frame, drawing_frame)
+        # Execute the current mode
+        func = modes[mode][2]
+        if func:
+            result = func()
+            if result:
+                throttle, yaw = result
         
         # Always allow manual control
         thr, yw = manual_control()

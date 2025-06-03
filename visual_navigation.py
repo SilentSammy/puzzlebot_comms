@@ -638,7 +638,7 @@ class IntersectionDetector:
         min_area=20,
         ep=0.035,
         min_points=5,
-        setpoint=0.55,
+        setpoint=0.7,
         max_yaw=30.0,
         max_thr=0.15,
         w_Kp=2.0,
@@ -776,45 +776,49 @@ class IntersectionDetector:
         return throttle, yaw
 
 class TrackNavigator:
-    def __init__(self, line_follower=None, intersection_detector=None):
+    def __init__(self,
+        line_follower=None,
+        intersection_detector=None,
+        controller=None,
+        decision_func=None,
+        decision_action=None,
+        backward = None,
+        turn_left = None,
+        turn_right = None,
+        forward = None,
+    ):
         self.lf = line_follower or LineFollower()
         self.id = intersection_detector or IntersectionDetector()
+        self.controller = controller or OpenLoopController()
 
         # Parameters
-        self.decision_func = None  # Function to decide the next action
-        self.decision_action = None  # Action to perform after decision
+        self.decision_func = decision_func      # Function to decide the next action
+        self.decision_action = decision_action  # Action to perform after decision
 
         # Static variables
         self.tmr = 0  # Timer for decision making
-        self.action_index = -1  # Index of the current action in the sequence
+
+        # Actions
+        backward = backward or [ (0, math.radians(180)) ]
+        turn_left = turn_left or [
+            (0.35, 0, 2.0),
+            (0, math.radians(90), 5.0),
+            (0.15, 0, 2.0),
+        ]
+        turn_right = turn_right or [
+            (0.35, 0, 2.0),
+            (0, -math.radians(90), 5.0),
+            (0.15, 0, 2.0),
+        ]
+        forward = forward or [ (0.5, 0) ]
+        self.actions = [backward, turn_left, turn_right, forward] # 0 = backward, 1 = left, 2 = right, 3 = forward
     
     def navigate(self, frame, drawing_frame=None):
-        # Define individual actions
-        forw = (0.15, 0, 3.5)               # Move forward
-        left = (0, math.radians(15), 6.5)  # left 90° turn
-        right = (0, -left[1], left[2])      # right 90° turn
-
-        # Define sequences of actions (v, w, t)
-        backward = [ (0, math.radians(30), 6) ]
-        turn_left = [
-            forw,
-            left, # left 90° turn
-            (0.15, 0, 1), # Move forward
-        ]
-        turn_right = [
-            forw,
-            right, # left 90° turn
-            (0.15, 0, 1), # Move forward
-        ]
-        forward = [ (0.15, 0, 4) ]
-        actions = [backward, turn_left, turn_right, forward] # 0 = backward, 1 = left, 2 = right, 3 = forward
-        decision_func = self.decision_func or (lambda frame: 1) # Default decision function
+        decision_func = self.decision_func or (lambda frame: 2) # Default decision function
         
         # If an action is in progress execute it.
-        if self.action_index != -1:
-            def reset_action():
-                self.action_index = -1
-            thr, yaw = sequence(actions=actions[self.action_index], when_done=reset_action)
+        if self.controller.running():
+            thr, yaw = self.controller.execute()
             return thr, yaw
 
         # Attempt to find intersection
@@ -831,17 +835,97 @@ class TrackNavigator:
             # If the robot has been stable for n seconds poll the decision function
             if time.time() - self.tmr > 2:
                 print("Polling decision function...")
-                self.action_index = decision_func(frame)
-                if self.action_index != -1:
+                action_index = decision_func(frame)
+
+
+                if action_index != -1:
                     action_labels = ["backward", "turn_left", "turn_right", "forward"]
-                    print(f"Decision made: {action_labels[self.action_index]}")
+                    print(f"Decision made: {action_labels[action_index]}")
                     if self.decision_action:
-                        self.decision_action(self.action_index)
+                        self.decision_action(action_index)
+                    # Start the action sequence
+                    self.controller.start(steps=self.actions[action_index], loop=False)
 
         else:
             # If no intersection is found, follow the line
             thr, yaw = self.lf.follow_line(frame, drawing_frame=drawing_frame)
         return thr, yaw
+
+class OpenLoopController:
+    def __init__(self,
+        linear_factor=1.0,
+        angular_factor=1.0,
+        loop=False,
+        default_duration=5.0,
+        steps=None,
+    ):
+        self.linear_factor = linear_factor
+        self.angular_factor = angular_factor
+
+        self.steps = steps or []
+
+        self.start_time = None  # Start time of the sequence
+        self.loop = loop        # Whether to loop the sequence
+        self.default_duration = default_duration
+    
+    def running(self):
+        return self.start_time is not None
+
+    def elapsed(self):
+        if self.start_time is None:
+            return float('inf')  # If not running, return infinite elapsed time
+        return time.time() - self.start_time
+
+    def unpack_step(self, step):
+        if len(step) == 2:
+            # If the step is a tuple of (x, theta)
+            x, theta = step
+            t = self.default_duration
+        elif len(step) == 3:
+            x, theta, t = step
+            t = t or self.default_duration
+        return x, theta, t
+
+    def get_current_index(self):
+        if not self.running():
+            return -1
+        elapsed = self.elapsed()
+        total = self.total_time()
+        if self.loop and total > 0:
+            elapsed = elapsed % total
+        unpacked_steps = [self.unpack_step(step) for step in self.steps]
+        for i, (x, theta, t) in enumerate(unpacked_steps):
+            if elapsed < t:
+                return i
+            elapsed -= t
+        return len(self.steps) - 1
+    
+    def total_time(self):
+        unpacked_steps = [self.unpack_step(step) for step in self.steps]
+        return sum(t for _, _, t in unpacked_steps)
+
+    def stop(self):
+        self.start_time = None
+
+    def start(self, steps=None, loop=None):
+        self.loop = loop if loop is not None else self.loop
+        self.steps = steps or self.steps
+        self.start_time = time.time()
+
+    def execute(self):
+        if not self.running():
+            return
+        if self.elapsed() >= self.total_time() and not self.loop:
+            self.start_time = None
+            return 0.0, 0.0  # Sequence finished
+
+        idx = self.get_current_index()
+        if idx != -1:
+            x, theta, t = self.unpack_step(self.steps[idx])
+            # Calculate throttle and yaw
+            throttle = x * self.linear_factor / t
+            yaw = theta * self.angular_factor / t
+            return throttle, yaw
 
 # SHARED VISION PIPELINE
 def adaptive_color_thresh(frame, drawing_frame=None,
