@@ -32,7 +32,8 @@
 + put end_reached in FlagDetector instead
 + add authority to LineFollower, so it displays the correct values in the drawing frame
 + make stoplight detector store a list of booleans
-- make a dedicated class or function for moving to relative waypoints. that class could internally choose whether to use open or closed loop (with odom) depending on the information that's available.
++ make a dedicated class or function for moving to relative waypoints. that class could internally choose whether to use open or closed loop (with odom) depending on the information that's available.
 - make generic nb polling function. make existing nb functions call it.
 - make SignDetector that works similar to StoplightDetector
 - make a get_persistent_intersection(). It should color an intersection green only when it has been confirmed.
+- make K and D not globals
