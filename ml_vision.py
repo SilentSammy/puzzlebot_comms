@@ -1,4 +1,3 @@
-import collections
 import cv2
 import numpy as np
 import argparse
@@ -7,144 +6,6 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
 import tkinter as tk
 from PIL import Image, ImageTk
-import threading
-
-class SignDetector:
-    def __init__(self, model_path, signs=None, history_len=4, chain_length=3, max_chain_gap=1):
-        self.model = load_classifier(model_path)
-        self._worker = None
-        self._lock = threading.Lock()
-        self._last_result = None
-        self._last_drawing_frame = None
-
-        self._signs = signs or {
-            0: ("back", []),
-            1: ("left", [34, 39]),
-            2: ("right", [33, 38]),
-            3: ("forw", [35]),
-        }
-
-        self._sign_lbls = {v: k[0] for v, k in self._signs.items()}
-
-        # Generate _cls_to_sign_map from self._signs
-        self._cls_to_sign_map = {}
-        for sign_id, (label, class_ids) in self._signs.items():
-            for cls_id in class_ids:
-                self._cls_to_sign_map[cls_id] = sign_id
-                
-        # Create a deque history for each sign
-        self.chain_length = chain_length  # Consecutive frames to consider a sign as seen
-        self.max_chain_gap = max_chain_gap  # Maximum gap in frames to consider a sign as seen
-        history_length = max(history_len, chain_length + max_chain_gap)
-        sign_ids = self._signs.keys()
-        self._sign_histories = {sign_id: collections.deque(maxlen=history_length) for sign_id in sign_ids}
-        
-    def process_frame(self, frame, drawing_frame=None):
-        rois = extract_rois(frame)
-        boxes, scores, clases = [], [], []
-        for x, y, w, h in rois:
-            class_id, score = classify_roi(self.model, frame[y:y+h, x:x+w])
-            if class_id not in ALLOWED_CLASS_IDS or score < CLASS_THRESHOLDS[class_id]:
-                continue
-            boxes.append([x, y, w, h])
-            scores.append(score)
-            clases.append(class_id)
-        dets = non_max_suppression(boxes, scores, clases)
-        
-        if drawing_frame is not None:
-            draw_detections(drawing_frame, dets)
-
-        return dets
-
-    def process_frame_nb(self, frame, drawing_frame=None):
-        """
-        Non-blocking version of process_frame.
-        Returns the last detections and optionally overlays the last annotated frame.
-        """
-        with self._lock:
-            result = self._last_result
-            annotated_frame = self._last_drawing_frame
-
-        # Start a new worker if none is running
-        if self._worker is None or not self._worker.is_alive():
-            def worker_func(frame_copy, drawing_frame):
-                dets = self.process_frame(frame_copy, drawing_frame=drawing_frame)
-                with self._lock:
-                    self._last_result = dets
-                    self._last_drawing_frame = drawing_frame
-
-            t = threading.Thread(
-                target=worker_func,
-                args=(frame.copy(), np.zeros_like(frame)),
-            )
-            t.daemon = True
-            t.start()
-            self._worker = t
-
-        if drawing_frame is not None and annotated_frame is not None:
-            # Overwrite the drawing_frame pixels with annotated_frame pixels wherever the mask is True.
-            non_black_mask = np.any(annotated_frame != 0, axis=2)
-            drawing_frame[non_black_mask] = annotated_frame[non_black_mask]
-
-        return result
-
-    def get_signs(self, frame, drawing_frame=None):
-        # Get tensorflow detections (x, y, w, h, class_id, score)
-        dets = self.process_frame(frame)
-
-        # Append our custom sign_ids to each detection based on class_id (x, y, w, h, class_id, score, +sign_id)
-        for i, det in enumerate(dets):
-            x, y, w, h, cls, score = det
-            if cls in self._cls_to_sign_map:
-                dets[i] = (x, y, w, h, cls, score, self._cls_to_sign_map[cls])
-        
-        # Draw but using our custom sign labels
-        if drawing_frame is not None:
-            for x, y, w, h, cls, score, sign_id in dets:
-                if score < CLASS_THRESHOLDS.get(cls, 1.0):
-                    continue
-                label = f"{self._sign_lbls[sign_id]}: {score:.2f}"
-                cv2.rectangle(drawing_frame, (x,y), (x+w,y+h), (0,255,0), 2)
-                cv2.putText(drawing_frame, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
-        return dets
-    
-    def get_best_sign(self, frame, drawing_frame=None):
-        """
-        Returns the sign_id of the most robustly detected sign in the current frame,
-        using temporal filtering with self._sign_histories.
-        """
-        # Get the signs in the frame (x, y, w, h, class_id, score, sign_id)
-        signs = self.get_signs(frame, drawing_frame=drawing_frame)
-
-        # Update histories: for each sign_id, append True if seen, else False
-        detected_sign_ids = {sign[-1] for sign in signs}  # sign_id is last element
-        for sign_id in self._sign_histories:
-            self._sign_histories[sign_id].append(sign_id in detected_sign_ids)
-
-        # Helper to check if a sign is confirmed
-        def is_confirmed(history):
-            return sum(history) >= (self.chain_length - self.max_chain_gap)
-
-        # Find all confirmed signs and their counts
-        confirmed_signs = []
-        for sign_id, history in self._sign_histories.items():
-            if is_confirmed(history):
-                count = sum(history)
-                confirmed_signs.append((sign_id, count))
-
-        # Return the sign_id with the most appearances in its history
-        confirmed_sign = None
-        if confirmed_signs:
-            confirmed_signs.sort(key=lambda x: x[1], reverse=True)
-            confirmed_sign = confirmed_signs[0][0]
-
-            if drawing_frame is not None:
-                # Draw the confirmed sign on the drawing frame
-                label = f"Confirmed: {self._sign_lbls[confirmed_sign]}"
-                cv2.putText(drawing_frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
-
-        return confirmed_sign
-
 
 COLOR_RANGES = {
     'red': [((0, 100, 100), (10, 255, 255)), ((160, 100, 100), (179, 255, 255))],
@@ -168,21 +29,19 @@ CLASS_NAMES = [
 ]
 
 
+ALLOWED_CLASS_IDS = {13, 14, 24, 25, 33, 34, 35}
 IOU_THRESHOLD = 0.3
 MIN_AREA = 500
 
 CLASS_THRESHOLDS = {
-    13: 0.80,   # Yield
-    14: 0.80,   # Stop
+    13: 0.90,  # Yield
+    14: 0.90,  # Stop
     24: 0.60,
-    25: 0.60,   # Road work: umbral reducido a 60%
-    33: 0.80,   # Turn right ahead
-    34: 0.80,   # Turn left ahead
-    35: 0.80,   # Ahead only
-    38: 0.80,   # Keep right
-    39: 0.80    # Keep left
+    25: 0.60,  # Road work: umbral reducido a 60%
+    33: 0.90,  # Turn right ahead
+    34: 0.90,  # Turn left ahead
+    35: 0.90   # Ahead only
 }
-ALLOWED_CLASS_IDS = set(CLASS_THRESHOLDS.keys())
 
 feature_extractor = None
 
@@ -324,9 +183,9 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Detección de señalamientos')
-    parser.add_argument('--model', help='Ruta al modelo .h5', default=r"gtsrb_cnn_98.h5")
-    parser.add_argument('--video', help='Ruta al video de entrada', default=r"resources\videos\signs_on_track.mp4")
-    parser.add_argument('--live', action='store_true', help='Usar cámara web', default=False)
+    parser.add_argument('--model', required=True, help='Ruta al modelo .h5')
+    parser.add_argument('--video', help='Ruta al video de entrada')
+    parser.add_argument('--live', action='store_true', help='Usar cámara web')
     parser.add_argument('--output', nargs='?', const=None, help='Video de salida (opcional)')
     parser.add_argument('--width', type=int, default=640, help='Ancho del frame')
     parser.add_argument('--height', type=int, default=480, help='Alto del frame')

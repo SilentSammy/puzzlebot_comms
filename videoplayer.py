@@ -7,7 +7,7 @@ import time
 import keybrd
 from collections import deque
 import visual_navigation as vn
-import ml_vision as mv
+import sign_detector
 
 class VideoPlayer:
     def __init__(self, frame_source):
@@ -128,7 +128,7 @@ track_nav = vn.TrackNavigator(
     line_follower=line_foll,
     intersection_detector=in_det,
 )
-sg_det = mv.SignDetector("gtsrb_cnn_98.h5")
+sg_det = sign_detector.SignDetector("gtsrb_cnn_98.h5")
 
 line_detection_pipeline = [
     ("adaptive_thres", lambda: line_foll.adaptive_thres(frame, drawing_frame)),
@@ -171,7 +171,7 @@ signs_pipeline = [
 
 if __name__ == "__main__":
     import keybrd
-    vp = VideoPlayer(r"resources\videos\track_with_signs.mp4")  # Path to the video file
+    vp = VideoPlayer(r"resources\videos\signs_on_track.mp4")  # Path to the video file
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
