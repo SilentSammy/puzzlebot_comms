@@ -2,35 +2,49 @@ import threading
 from time import sleep
 import numpy as np
 
+import threading
+from queue import Queue, Full, Empty
+import numpy as np
+
 class BackgroundPoller:
-    def __init__(self):
+    def __init__(self, max_workers=5):
         self._result = None
         self._lock = threading.Lock()
-        self._worker = None
+        self._queue = Queue(maxsize=max_workers)
+        self._max_workers = max_workers
+        self._threads = []
+        self._started = False
+
+    def _worker(self):
+        while True:
+            func = self._queue.get()
+            if func is None:
+                break  # Sentinel to shut down
+            value = func()
+            with self._lock:
+                self._result = value
+            self._queue.task_done()
+
+    def _start_threads(self):
+        if not self._started:
+            for _ in range(self._max_workers):
+                t = threading.Thread(target=self._worker, daemon=True)
+                t.start()
+                self._threads.append(t)
+            self._started = True
 
     def poll(self, func):
+        self._start_threads()
         with self._lock:
             result = self._result
-
-        if self._worker is None or not self._worker.is_alive():
-            def worker_func():
-                value = func()
-                with self._lock:
-                    self._result = value
-            t = threading.Thread(target=worker_func)
-            t.daemon = True
-            t.start()
-            self._worker = t
-
+        try:
+            self._queue.put_nowait(func)
+        except Full:
+            # Queue is full, refuse to queue more
+            pass
         return result
-    
+
     def poll_with_annotated(self, frame, drawing_frame, func):
-        """
-        Helper for non-blocking vision functions that use a drawing frame.
-        - frame: input image
-        - drawing_frame: output image to overlay results on
-        - func: function of (annotated_frame) -> result
-        """
         def worker_func():
             annot = np.zeros_like(frame)
             result = func(annot)
