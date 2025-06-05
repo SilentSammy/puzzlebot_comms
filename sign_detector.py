@@ -9,6 +9,7 @@ import tkinter as tk
 from PIL import Image, ImageTk
 import threading
 import ml_vision as mv
+from backg_poller import BackgroundPoller
 
 class SignDetector:
     def __init__(self,
@@ -18,7 +19,9 @@ class SignDetector:
         history_len=4,
         chain_length=6,
         max_chain_gap=2,
-    ):
+    ): 
+        self._bg_poll = BackgroundPoller(max_workers=3)
+
         self.model = mv.load_classifier(model_path)
 
         # Overwrite some constants in ml_vision.py
@@ -85,39 +88,7 @@ class SignDetector:
             self.draw_detections(drawing_frame, dets)
 
         return dets
-
-    def process_frame_nb(self, frame, drawing_frame=None):
-        """
-        Non-blocking version of process_frame.
-        Returns the last detections and optionally overlays the last annotated frame.
-        """
-        with self._lock:
-            result = self._last_result
-            annotated_frame = self._last_drawing_frame
-
-        # Start a new worker if none is running
-        if self._worker is None or not self._worker.is_alive():
-            def worker_func(frame_copy, drawing_frame):
-                dets = self.process_frame(frame_copy, drawing_frame=drawing_frame)
-                with self._lock:
-                    self._last_result = dets
-                    self._last_drawing_frame = drawing_frame
-
-            t = threading.Thread(
-                target=worker_func,
-                args=(frame.copy(), np.zeros_like(frame)),
-            )
-            t.daemon = True
-            t.start()
-            self._worker = t
-
-        if drawing_frame is not None and annotated_frame is not None:
-            # Overwrite the drawing_frame pixels with annotated_frame pixels wherever the mask is True.
-            non_black_mask = np.any(annotated_frame != 0, axis=2)
-            drawing_frame[non_black_mask] = annotated_frame[non_black_mask]
-
-        return result
-
+    
     def get_signs(self, frame, drawing_frame=None):
         # Get tensorflow detections (x, y, w, h, class_id, score)
         dets = self.process_frame(frame)
@@ -181,6 +152,9 @@ class SignDetector:
             )
 
         return confirmed_sign
+
+    def get_best_sign_nb(self, frame, drawing_frame=None):
+        return self._bg_poll.poll_with_annotated( frame, drawing_frame, lambda af: self.get_best_sign(frame, af) )
 
     def draw_detections(self, frame, detections, color=(0, 255, 0), lbl_get=None):
         for det in detections:

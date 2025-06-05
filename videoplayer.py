@@ -167,48 +167,52 @@ signs_pipeline = [
     ("process_frame", lambda: sg_det.process_frame(frame, drawing_frame)),
     ("get_signs", lambda: sg_det.get_signs(frame, drawing_frame)),
     ("get_best_sign", lambda: sg_det.get_best_sign(frame, drawing_frame)),
+    ("get_best_sign_nb", lambda: sg_det.get_best_sign_nb(frame, drawing_frame)),
 ]
 
 if __name__ == "__main__":
-    import keybrd
-    vp = VideoPlayer(r"resources\videos\stoplight_w_flag.mp4")  # Path to the video file
-    re = keybrd.rising_edge # Function to check if a key is pressed once
-    pr = keybrd.is_pressed  # Function to check if a key is held down
-    tg = keybrd.is_toggled  # Function to check if a key is toggled
-    layers = chessboard
-    layer = 1
-    
-    while True:
-        # Get current frame
-        vp.time_step()
-        vp.move(1 if pr('d') else -1 if pr('a') else 0)  # Move forward/backward
-        vp.move((1 if pr('e') else -1 if pr('q') else 0) * 10)  # Fast forward/backward
-        vp.step(1 if re('w') else -1 if re('s') else 0)  # Step forward/backward
-        mask = None
-        frame = vp.get_frame()
-        drawing_frame = frame.copy()
+    try:
+        import keybrd
+        vp = VideoPlayer(r"resources\videos\signs_on_track.mp4")  # Path to the video file
+        re = keybrd.rising_edge # Function to check if a key is pressed once
+        pr = keybrd.is_pressed  # Function to check if a key is held down
+        tg = keybrd.is_toggled  # Function to check if a key is toggled
+        layers = signs_pipeline
+        layer = 1
+        
+        while True:
+            # Get current frame
+            vp.time_step()
+            vp.move(1 if pr('d') else -1 if pr('a') else 0)  # Move forward/backward
+            vp.move((1 if pr('e') else -1 if pr('q') else 0) * 10)  # Fast forward/backward
+            vp.step(1 if re('w') else -1 if re('s') else 0)  # Step forward/backward
+            mask = None
+            frame = vp.get_frame()
+            drawing_frame = frame.copy()
 
-        # Print the current frame
-        print(f"Frame {vp.frame_idx}/{vp.frame_count} ", end='')
+            # Print the current frame
+            print(f"Frame {vp.frame_idx}/{vp.frame_count} ", end='')
 
-        # Choose layer to show
-        for i in range(1, 10):
-            if re(str(i)):
-                layer = i
-                break
+            # Choose layer to show
+            for i in range(1, 10):
+                if re(str(i)):
+                    layer = i
+                    break
 
-        # Choose the layer to show. Layer 1 is do nothing. Layer 2 is index 0 in the pipeline, etc.
-        if layer >= 2 and layer <= len(layers) + 1:
-            name, func = layers[layer - 2]
-            print(name, end=', ')
-            func()
+            # Choose the layer to show. Layer 1 is do nothing. Layer 2 is index 0 in the pipeline, etc.
+            if layer >= 2 and layer <= len(layers) + 1:
+                name, func = layers[layer - 2]
+                print(name, end=', ')
+                func()
 
-        print()
-    
-        if re('p'): # Save the current frame as an image.
-            output_file = f"frame_{vp.frame_idx}_layer_{layer}.png"
-            cv2.imwrite(output_file, drawing_frame)
-            print(f"Saved frame {vp.frame_idx} as {output_file}")
+            print()
+        
+            if re('p'): # Save the current frame as an image.
+                output_file = f"frame_{vp.frame_idx}_layer_{layer}.png"
+                cv2.imwrite(output_file, drawing_frame)
+                print(f"Saved frame {vp.frame_idx} as {output_file}")
 
-        # Show
-        vp.show_frame(drawing_frame, "Frame")
+            # Show
+            vp.show_frame(drawing_frame, "Frame")
+    finally:
+        pass

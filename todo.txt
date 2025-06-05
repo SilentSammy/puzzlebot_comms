@@ -35,7 +35,10 @@
 + make a dedicated class or function for moving to relative waypoints. that class could internally choose whether to use open or closed loop (with odom) depending on the information that's available.
 +- make SignDetector that works similar to StoplightDetector
 - make a get_persistent_intersection(). It should color an intersection green only when it has been confirmed.
+-- make generic algs for location persistence (like in LineFollower) and state persistence (like in StoplightDetector)
 - make K and D not globals
-- batch classify rois
-- custom drawDetections
-- make generic nb polling method / class. make existing nb functions call it. It should allow multiple concurrent threads.
++- batch classify rois
++ custom drawDetections
++ make generic nb polling method / class. make existing nb functions call it. It should allow multiple concurrent threads.
+- wrap TrackNavigator (possibly rename or refactor such that it only handles intersection logic) in new class, that uses ML to decide turn, and stoplight detection to decide the authority of the internal LineFollower.
+- ask: Fatal Python error: _enter_buffered_busy: could not acquire lock for <_io.BufferedWriter name='<stdout>'> at interpreter shutdown, possibly due to daemon threads

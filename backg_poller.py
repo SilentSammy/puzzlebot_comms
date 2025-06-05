@@ -7,7 +7,7 @@ from queue import Queue, Full, Empty
 import numpy as np
 
 class BackgroundPoller:
-    def __init__(self, max_workers=5):
+    def __init__(self, max_workers=1):
         self._result = None
         self._lock = threading.Lock()
         self._queue = Queue(maxsize=max_workers)

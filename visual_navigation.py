@@ -511,12 +511,6 @@ class FlagDetector:
         self.pattern_size = pattern_size    # Chessboard pattern size
         self.square_size = square_size      # Size of each square in meters
 
-        # Multi-threading static variables
-        self._worker = None
-        self._lock = threading.Lock()
-        self._last_result = None
-        self._last_drawing_frame = None
-        
         # Better multi-threading logic
         self._bg_poll = BackgroundPoller()
 
@@ -558,36 +552,6 @@ class FlagDetector:
     
     def get_flag_distance_nb(self, frame, drawing_frame=None):
         return self._bg_poll.poll_with_annotated( frame, drawing_frame, lambda af: self.get_flag_distance(frame, af) )
-
-    def get_flag_distance_nb_old(self, frame, drawing_frame=None):
-        with self._lock:
-            result = self._last_result
-            annotated_frame = self._last_drawing_frame
-            
-        
-        # If processing is not ongoing, process in background
-        if self._worker is None or not self._worker.is_alive():
-            def worker_func(frame_copy, drawing_frame):
-                dist = self.get_flag_distance( frame_copy, drawing_frame=drawing_frame )
-                with self._lock:
-                    self._last_result = dist
-                    self._last_drawing_frame = drawing_frame
-        
-            # Start the worker thread
-            t = threading.Thread(
-                target=worker_func,
-                args=(frame.copy(), np.zeros_like(frame)),
-            )
-            t.daemon = True
-            t.start()
-            self._worker = t
-        
-        if drawing_frame is not None and annotated_frame is not None:
-            # Overwrite the drawing_frame pixels with annotated_frame pixels wherever the mask is True.
-            non_black_mask = np.any(annotated_frame != 0, axis=2)
-            drawing_frame[non_black_mask] = annotated_frame[non_black_mask]
-
-        return result
 
     def flag_reached(self, frame, drawing_frame=None, non_blocking=True):
         if not self.end_reached:

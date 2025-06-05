@@ -11,7 +11,7 @@ from pose_estimation import find_arucos, estimate_marker_pose
 import pose_estimation as pe
 from simple_pid import PID
 import visual_navigation as vn
-from ml_vision import SignDetector
+from sign_detector import SignDetector
 
 # Connection
 # puzzlebot = PuzzlebotHttpClient("http://192.168.137.99:5000", safe_mode=True)
@@ -19,7 +19,7 @@ puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=False)
 
 line_foll = vn.LineFollower()
 sl_det = vn.StoplightDetector()
-fl_det = vn.FlagDetector()
+fl_det = vn.FlagDetector(pattern_size=(4, 3), square_size=0.02)
 in_det = vn.IntersectionDetector(undistort=puzzlebot.base_url.endswith("5000"))
 sl_nav = vn.StoplightNavigator(
     line_follower=line_foll, 
@@ -30,7 +30,7 @@ sl_nav = vn.StoplightNavigator(
 track_nav = vn.TrackNavigator(
     line_follower=line_foll,
     intersection_detector=in_det,
-    decision_func=lambda frame: 2,
+    decision_func=lambda frame: 1,
 )
 ol_con = vn.OpenLoopController(
     linear_factor=1.0,
