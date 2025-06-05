@@ -145,7 +145,7 @@ stoplight_pipeline = [
     ("identify_stoplight", lambda: print(sl_det.identify_stoplight( frame, drawing_frame=drawing_frame ))),
 ]
 
-checkerboard = [
+chessboard = [
     ("get_flag_distance", lambda: print(fl_det.get_flag_distance(frame, drawing_frame=drawing_frame))),
     ("get_flag_distance_nb", lambda: print(fl_det.get_flag_distance_nb(frame, drawing_frame=drawing_frame))),
 ]
@@ -171,11 +171,11 @@ signs_pipeline = [
 
 if __name__ == "__main__":
     import keybrd
-    vp = VideoPlayer(r"resources\videos\signs_on_track.mp4")  # Path to the video file
+    vp = VideoPlayer(r"resources\videos\stoplight_w_flag.mp4")  # Path to the video file
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
-    layers = signs_pipeline
+    layers = chessboard
     layer = 1
     
     while True:

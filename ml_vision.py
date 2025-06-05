@@ -89,6 +89,37 @@ def extract_rois(frame):
                 rois.append((x, y, w, h))
     return rois
 
+def batch_classify_rois(model, rois):
+    """
+    Classifies a list of ROIs using the loaded CNN model.
+    Returns a list of (class_id, score) tuples.
+    """
+    if not rois:
+        return []
+    # Determine input size
+    if feature_extractor:
+        size = (224, 224)
+        processed = []
+        for roi in rois:
+            img = cv2.resize(roi, size)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            x = img.astype('float32')
+            processed.append(x)
+        input_tensor = preprocess_input(np.stack(processed, axis=0))
+        feats = feature_extractor.predict(input_tensor)
+        preds = model.predict(feats)
+    else:
+        h, w = model.input_shape[1:3]
+        processed = []
+        for roi in rois:
+            img = cv2.resize(roi, (w, h))
+            x = img.astype('float32') / 255.0
+            processed.append(x)
+        input_tensor = np.stack(processed, axis=0)
+        preds = model.predict(input_tensor)
+    class_ids = np.argmax(preds, axis=1)
+    scores = np.max(preds, axis=1)
+    return list(zip(class_ids, scores))
 
 def classify_roi(model, roi):
     if feature_extractor:
@@ -129,13 +160,16 @@ def draw_detections(frame, detections):
 def process_frame(frame, model):
     rois = extract_rois(frame)
     boxes, scores, clases = [], [], []
-    for x, y, w, h in rois:
-        class_id, score = classify_roi(model, frame[y:y+h, x:x+w])
+    # New (fast) way: batch classify all ROIs
+    roi_imgs = [frame[y:y+h, x:x+w] for x, y, w, h in rois]
+    results = batch_classify_rois(model, roi_imgs)
+    for (x, y, w, h), (class_id, score) in zip(rois, results):
         if class_id not in ALLOWED_CLASS_IDS or score < CLASS_THRESHOLDS[class_id]:
             continue
         boxes.append([x, y, w, h])
         scores.append(score)
         clases.append(class_id)
+
     dets = non_max_suppression(boxes, scores, clases)
     draw_detections(frame, dets)
     return frame

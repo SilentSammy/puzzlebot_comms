@@ -6,6 +6,7 @@ import cv2
 import time
 from collections import deque
 from itertools import combinations, count
+from backg_poller import BackgroundPoller
 
 class LineFollower:
     def __init__(
@@ -515,6 +516,9 @@ class FlagDetector:
         self._lock = threading.Lock()
         self._last_result = None
         self._last_drawing_frame = None
+        
+        # Better multi-threading logic
+        self._bg_poll = BackgroundPoller()
 
         self.dist_thres = dist_thres  # Distance threshold in meters to consider the flag close
         self.end_reached = False  # Flag to indicate if the end has been reached
@@ -553,6 +557,9 @@ class FlagDetector:
         return dist
     
     def get_flag_distance_nb(self, frame, drawing_frame=None):
+        return self._bg_poll.poll_with_annotated( frame, drawing_frame, lambda af: self.get_flag_distance(frame, af) )
+
+    def get_flag_distance_nb_old(self, frame, drawing_frame=None):
         with self._lock:
             result = self._last_result
             annotated_frame = self._last_drawing_frame

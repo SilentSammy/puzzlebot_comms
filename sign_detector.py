@@ -16,8 +16,8 @@ class SignDetector:
         cls_thres=None,
         signs=None,
         history_len=4,
-        chain_length=3,
-        max_chain_gap=1,
+        chain_length=6,
+        max_chain_gap=2,
     ):
         self.model = mv.load_classifier(model_path)
 
@@ -70,8 +70,10 @@ class SignDetector:
     def process_frame(self, frame, drawing_frame=None):
         rois = mv.extract_rois(frame)
         boxes, scores, clases = [], [], []
-        for x, y, w, h in rois:
-            class_id, score = mv.classify_roi(self.model, frame[y:y+h, x:x+w])
+        # Batch classify all ROIs for speed
+        roi_imgs = [frame[y:y+h, x:x+w] for x, y, w, h in rois]
+        results = mv.batch_classify_rois(self.model, roi_imgs)
+        for (x, y, w, h), (class_id, score) in zip(rois, results):
             if class_id not in mv.ALLOWED_CLASS_IDS or score < mv.CLASS_THRESHOLDS[class_id]:
                 continue
             boxes.append([x, y, w, h])
