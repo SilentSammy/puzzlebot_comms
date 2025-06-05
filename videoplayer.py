@@ -124,7 +124,7 @@ sl_nav = vn.StoplightNavigator(
     stoplight_detector=sl_det, 
     flag_detector=fl_det
 )
-track_nav = vn.TrackNavigator(
+track_nav = vn.IntersectionNavigator(
     line_follower=line_foll,
     intersection_detector=in_det,
 )
@@ -167,7 +167,7 @@ signs_pipeline = [
     ("process_frame", lambda: sg_det.process_frame(frame, drawing_frame)),
     ("get_signs", lambda: sg_det.get_signs(frame, drawing_frame)),
     ("get_best_sign", lambda: sg_det.get_best_sign(frame, drawing_frame)),
-    ("get_best_sign_nb", lambda: sg_det.get_best_sign_nb(frame, drawing_frame)),
+    ("get_best_sign_nb", lambda: print(sg_det.get_best_sign_nb(frame, drawing_frame))),
 ]
 
 if __name__ == "__main__":

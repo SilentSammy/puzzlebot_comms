@@ -27,7 +27,7 @@ sl_nav = vn.StoplightNavigator(
     flag_detector=fl_det,
     end_action=lambda: print("Stoplight navigation completed!")  # Optional end action
 )
-track_nav = vn.TrackNavigator(
+int_nav = vn.IntersectionNavigator(
     line_follower=line_foll,
     intersection_detector=in_det,
     decision_func=lambda frame: 1,
@@ -37,6 +37,10 @@ ol_con = vn.OpenLoopController(
     angular_factor=1.0,
 )
 sg_det = SignDetector("gtsrb_cnn_98.h5")
+track_nav = vn.TrackNavigator(
+    intersection_navigator=int_nav,
+    sign_detector=sg_det,
+)
 
 # Maximum values for throttle and yaw
 max_yaw = math.radians(180)
@@ -153,10 +157,11 @@ def record(frame):
 modes = [
     (('1', 'X'), "Manual Control", lambda: None),
     (('2', 'A'), "Follow Line with Signs", lambda: sl_nav.navigate(frame, drawing_frame)),
-    (('3',), "Follow Line", lambda: line_foll.follow_line(frame, drawing_frame)),
-    (('4',), "Follow Line with Intersection", lambda: track_nav.navigate(frame, drawing_frame)),
+    (('3'), "Follow Line", lambda: line_foll.follow_line(frame, drawing_frame)),
+    (('4'), "Follow Line with Intersection", lambda: int_nav.navigate(frame, drawing_frame)),
     (('5'), "Stop at intersection", lambda: in_det.stop_at_intersection(frame, drawing_frame)),
-    (('6'), "SignDetector", lambda: sg_det.process_frame_nb(frame, drawing_frame)),
+    (('6'), "SignDetector", lambda: sg_det.get_best_sign_nb(frame, drawing_frame)),
+    (('7'), "Track Navigator", lambda: track_nav.navigate(frame, drawing_frame)),
 ]
 
 mode = 0

@@ -747,11 +747,11 @@ class IntersectionDetector:
 
         return throttle, yaw
 
-class TrackNavigator:
+class IntersectionNavigator:
     def __init__(self,
         line_follower=None,
         intersection_detector=None,
-        controller=None,
+        ol_controller=None,
         decision_func=None,
         decision_action=None,
         backward = None,
@@ -761,7 +761,7 @@ class TrackNavigator:
     ):
         self.lf = line_follower or LineFollower()
         self.id = intersection_detector or IntersectionDetector()
-        self.controller = controller or OpenLoopController()
+        self.controller = ol_controller or OpenLoopController()
 
         # Parameters
         self.decision_func = decision_func      # Function to decide the next action
@@ -810,7 +810,7 @@ class TrackNavigator:
                 action_index = decision_func(frame)
 
 
-                if action_index != -1:
+                if action_index is not None and action_index != -1:
                     action_labels = ["backward", "turn_left", "turn_right", "forward"]
                     print(f"Decision made: {action_labels[action_index]}")
                     if self.decision_action:
@@ -898,6 +898,32 @@ class OpenLoopController:
             throttle = x * self.linear_factor / t
             yaw = theta * self.angular_factor / t
             return throttle, yaw
+
+class TrackNavigator:
+    def __init__(self,
+        sign_detector,
+        intersection_navigator=None,
+    ):
+        self.inav = intersection_navigator or IntersectionNavigator()
+        self.sd = sign_detector
+        self.last_sign = None  # Last detected sign
+        self.setup(self.inav)
+    
+    def setup(self, inav):
+        def decision_func(frame):
+            # Use the sign detector to decide the next action
+            if self.last_sign is not None:
+                x, y, w, h, cls_id, score, sign_id, sign_name = self.last_sign
+                if sign_id in [0, 1, 2, 3]: # If it's a back, left, right or forward sign, return the corresponding action index
+                    return sign_id
+        
+        # Overwrite the decision function with the one that uses the sign detector
+        inav.decision_func = decision_func
+
+    def navigate(self, frame, drawing_frame=None):
+        self.last_sign = self.sd.get_best_sign_nb(frame, drawing_frame=drawing_frame)
+        thr, yaw = self.inav.navigate(frame, drawing_frame=drawing_frame)
+        return thr, yaw
 
 # SHARED VISION PIPELINE
 def adaptive_color_thresh(frame, drawing_frame=None,
