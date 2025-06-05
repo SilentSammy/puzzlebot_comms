@@ -7,6 +7,7 @@ app = Flask(__name__)
 http_endpoints = {}
 video_endpoints = {}
 port = 5000
+STARTED = False
 
 def start_webserver(threaded=True):
     if threaded:
@@ -29,6 +30,7 @@ def start_webserver(threaded=True):
             use_reloader=False,
             threaded=True
         )
+    STARTED = True
 
 @app.route('/', defaults={'path': ''}, methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
 @app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])

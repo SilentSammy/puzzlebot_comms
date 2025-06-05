@@ -9,7 +9,46 @@ import tkinter as tk
 from PIL import Image, ImageTk
 import threading
 from backg_poller import BackgroundPoller
+from dataclasses import dataclass
+from vision_offloader import VisionOffloader
 
+@dataclass
+class Sign:
+    id: int
+    label: str
+    detection: tuple  # (x, y, w, h, class_id, score)
+
+class OffloadedSignDetector:
+    def __init__(self):
+        self.vo = VisionOffloader(video_endpoint="video_feed", reception_endpoint="frame_data")
+    
+    def get_best_sign(self, frame, drawing_frame=None):
+        self.vo.offload_frame(frame)
+        if self.vo.received_data is None:
+            return None
+        
+        # Otherwise, assume self.vo.received_data contains a JSON as such:
+        # {
+        #     "sign_id": 1,
+        #     "sign_label": "stop",
+        #     "detection": [x, y, w, h, class_id, score]
+        # }
+        data = self.vo.received_data
+        best_sign = Sign(
+            id=data["sign_id"],
+            label=data["sign_label"],
+            detection=tuple(data["detection"])
+        )
+
+        # Draw the best sign on the drawing frame if provided
+        if drawing_frame is not None:
+            x, y, w, h, cls, score = best_sign.detection
+            cv2.rectangle(drawing_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            label = f"{best_sign.label}: {score:.2f}"
+            cv2.putText(drawing_frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    def get_best_sign_nb(self, frame, drawing_frame=None):
+        return self.get_best_sign(frame, drawing_frame) # No need for background polling in this case, as the VisionOffloader handles it.
 
 class SignDetector:
     def __init__(self,
@@ -115,7 +154,15 @@ class SignDetector:
         class_ids = np.argmax(preds, axis=1)
         scores = np.max(preds, axis=1)
         return list(zip(class_ids, scores))
-
+    
+    def non_max_suppression(self, boxes, scores, classes):
+        min_thresh = min(self.cls_thres.values())
+        indices = cv2.dnn.NMSBoxes(boxes, scores, score_threshold=min_thresh, nms_threshold=IOU_THRESHOLD)
+        if not len(indices):
+            return []
+        idxs = indices.flatten()
+        return [(boxes[i][0], boxes[i][1], boxes[i][2], boxes[i][3], classes[i], scores[i]) for i in idxs]
+    
     def process_frame(self, frame, drawing_frame=None):
         rois = extract_rois(frame)
         boxes, scores, clases = [], [], []
@@ -134,40 +181,40 @@ class SignDetector:
             self.draw_detections(drawing_frame, dets)
 
         return dets
-    
-    def non_max_suppression(self, boxes, scores, classes):
-        min_thresh = min(self.cls_thres.values())
-        indices = cv2.dnn.NMSBoxes(boxes, scores, score_threshold=min_thresh, nms_threshold=IOU_THRESHOLD)
-        if not len(indices):
-            return []
-        idxs = indices.flatten()
-        return [(boxes[i][0], boxes[i][1], boxes[i][2], boxes[i][3], classes[i], scores[i]) for i in idxs]
-    
+
     def get_signs(self, frame, drawing_frame=None):
         # Get tensorflow detections (x, y, w, h, class_id, score)
         dets = self.process_frame(frame)
 
-        # Append our custom sign_ids to each detection based on class_id (x, y, w, h, class_id, score, +sign_id, +sign_label)
-        dets = [det for det in dets if det[4] in self._cls_to_sign_map]  # Filter out detections not in cls_to_sign_map
-        for i, det in enumerate(dets):
+        # Create Sign dataclass instances for each detection with a known class_id
+        signs = []
+        for det in dets:
             x, y, w, h, cls, score = det
-            dets[i] = (x, y, w, h, cls, score, self._cls_to_sign_map[cls], self._sign_lbls[self._cls_to_sign_map[cls]])
+            if cls in self._cls_to_sign_map:
+                sign_id = self._cls_to_sign_map[cls]
+                label = self._sign_lbls[sign_id]
+                sign = Sign(id=sign_id, label=label, detection=(x, y, w, h, cls, score))
+                signs.append(sign)
 
         if drawing_frame is not None:
-            self.draw_detections(drawing_frame, dets, lbl_get=lambda det: f"{det[7]}")
+            self.draw_detections(
+                drawing_frame,
+                [s.detection for s in signs],
+                lbl_get=lambda det: f"{self._sign_lbls[self._cls_to_sign_map[det[4]]]}"
+            )
 
-        return dets
+        return signs
     
     def get_best_sign(self, frame, drawing_frame=None):
         """
-        Returns the sign_id of the most robustly detected sign in the current frame,
+        Returns the Sign dataclass instance of the most robustly detected sign in the current frame,
         using temporal filtering with self._sign_histories.
         """
-        # Get the signs in the frame (x, y, w, h, class_id, score, sign_id, sign_label)
+        # Get the signs in the frame (Sign dataclass instances)
         signs = self.get_signs(frame)
 
         # Update histories: for each sign_id, append True if seen, else False
-        detected_sign_ids = {sign[6] for sign in signs}  # sign_id is 6th element in the tuple
+        detected_sign_ids = {sign.id for sign in signs}
         for sign_id in self._sign_histories:
             self._sign_histories[sign_id].append(sign_id in detected_sign_ids)
 
@@ -182,14 +229,13 @@ class SignDetector:
                 count = sum(history)
                 confirmed_signs.append((sign_id, count))
 
-                # Return the sign tuple with the most appearances in its history
         best_sign = None
         if confirmed_signs:
             confirmed_signs.sort(key=lambda x: x[1], reverse=True)
             best_sign_id = confirmed_signs[0][0]
-            # Find the first matching sign tuple in this frame
+            # Find the first matching Sign instance in this frame
             for sign in signs:
-                if sign[6] == best_sign_id:
+                if sign.id == best_sign_id:
                     best_sign = sign
                     break
 
@@ -197,17 +243,17 @@ class SignDetector:
             # Draw the confirmed sign in green
             self.draw_detections(
                 drawing_frame,
-                [sign for sign in signs if best_sign and sign[6] == best_sign[6]],
+                [sign.detection for sign in signs if best_sign and sign.id == best_sign.id],
                 color=(0, 255, 0),
-                lbl_get=lambda det: f"{det[7]} (confirmed)"
+                lbl_get=lambda det: f"{best_sign.label} (confirmed)" if best_sign else ""
             )
 
             # Draw all other signs in red
             self.draw_detections(
                 drawing_frame,
-                [sign for sign in signs if not best_sign or sign[6] != best_sign[6]],
+                [sign.detection for sign in signs if not best_sign or sign.id != best_sign.id],
                 color=(0, 0, 255),
-                lbl_get=lambda det: f"{det[7]} (not confirmed)"
+                lbl_get=lambda det: f"{[sign.label for sign in signs if sign.detection == det][0]} (not confirmed)"
             )
 
         return best_sign
