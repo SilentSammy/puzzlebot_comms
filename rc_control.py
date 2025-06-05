@@ -11,9 +11,10 @@ from pose_estimation import find_arucos, estimate_marker_pose
 import pose_estimation as pe
 from simple_pid import PID
 import visual_navigation as vn
+from ml_vision import SignDetector
 
 # Connection
-# puzzlebot = PuzzlebotHttpClient("http://192.168.137.95:5000", safe_mode=True)
+# puzzlebot = PuzzlebotHttpClient("http://192.168.137.99:5000", safe_mode=True)
 puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=False)
 
 line_foll = vn.LineFollower()
@@ -35,6 +36,7 @@ ol_con = vn.OpenLoopController(
     linear_factor=1.0,
     angular_factor=1.0,
 )
+sg_det = SignDetector("gtsrb_cnn_98.h5")
 
 # Maximum values for throttle and yaw
 max_yaw = math.radians(180)
@@ -154,7 +156,9 @@ modes = [
     (('3',), "Follow Line", lambda: line_foll.follow_line(frame, drawing_frame)),
     (('4',), "Follow Line with Intersection", lambda: track_nav.navigate(frame, drawing_frame)),
     (('5'), "Stop at intersection", lambda: in_det.stop_at_intersection(frame, drawing_frame)),
+    (('6'), "SignDetector", lambda: sg_det.process_frame_nb(frame, drawing_frame)),
 ]
+
 mode = 0
 try:
     while True:
@@ -178,7 +182,11 @@ try:
         func = modes[mode][2]
         if func:
             result = func()
-            if result:
+            if (
+            isinstance(result, tuple)
+            and len(result) == 2
+            and all(isinstance(x, float) for x in result)
+            ):
                 throttle, yaw = result
         
         # Always allow manual control

@@ -303,6 +303,7 @@ class StoplightDetector:
                  edge_thres_y=0.0,
                  chain_length=4,
                  max_chain_gap=1,
+                 history_len=5
         ):
 
         # Adaptive color thresholding parameters
@@ -333,7 +334,7 @@ class StoplightDetector:
         self.max_chain_gap = max_chain_gap  # Maximum gap in frames to consider a color as seen
 
         # Identify stoplight static variables
-        color_history_len = chain_length + max_chain_gap
+        color_history_len = max(history_len, chain_length + max_chain_gap)
         self.red_history = deque(maxlen=color_history_len)
         self.yellow_history = deque(maxlen=color_history_len)
         self.green_history = deque(maxlen=color_history_len)
@@ -1258,50 +1259,6 @@ def clear_lost_objects(tracked_objs, lost_objs, lost_timeout, is_lost, get_lost_
                 tracked_objs.remove(obj)
                 if get_id is not None:
                     print(f"Object {get_id(obj)} removed after being lost for {lost_timeout} seconds")
-
-# END NAVIGATION ALGORITHMS (THESE RETURN THROTTLE AND YAW) (NON-BLOCKING, MUST BE CALLED IN A LOOP)
-def sequence(actions=None, when_done=None, speed_factor=1):
-    """ Execute a sequence of actions. Each action is a tuple (v, w, t) """
-
-    # Static variables
-    sequence.last_time = sequence.last_time if hasattr(sequence, "last_time") else time.time()
-    sequence.elapsed_time = sequence.elapsed_time if hasattr(sequence, "elapsed_time") else 0
-    
-    # Define the sequence of actions or use default
-    actions = actions or [ # v, w, t
-        (0.15, 0, 2), # Move 30cm forward
-        (0, -math.radians(30), 3), # 90° turn
-        (0.15, 0, 2), # Move 30cm forward
-    ]
-    actions = [(v*speed_factor, w*speed_factor, t) for v, w, t in actions]
-    total_time = sum([t for _, _, t in actions])
-
-    # Get the elapsed time
-    since_last = time.time() - sequence.last_time
-    if since_last > 0.5: # If the time since last call is too long, reset the timer.
-        sequence.elapsed_time = 0
-        sequence.last_time = time.time()
-        since_last = 0
-    sequence.elapsed_time += since_last * speed_factor
-    sequence.last_time = time.time()
-
-    elapsed = sequence.elapsed_time
-    if elapsed > total_time: # done
-        if when_done:
-            when_done()
-    elapsed =  elapsed % total_time
-
-    action = None
-    ac_time = 0
-    for i, act in enumerate(actions):
-        ac_time += act[2]
-        if elapsed < ac_time:
-            action = act
-            break
-    
-    throttle, yaw = 0, 0
-    throttle, yaw, _ = action
-    return throttle, yaw
 
 # GLOBAL CAMERA PARAMETERS
 K = np.array([
