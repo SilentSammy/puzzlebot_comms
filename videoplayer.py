@@ -1,13 +1,6 @@
 import os
-from simple_pid import PID
-import numpy as np
-import math
 import cv2
 import time
-import keybrd
-from collections import deque
-import visual_navigation as vn
-import sign_detector
 
 class VideoPlayer:
     def __init__(self, frame_source):
@@ -115,104 +108,104 @@ class VideoPlayer:
             
             self._get_frame = get_frame
 
-line_foll = vn.LineFollower()
-sl_det = vn.StoplightDetector()
-fl_det = vn.FlagDetector()
-in_det = vn.IntersectionDetector()
-sl_nav = vn.StoplightNavigator(
-    line_follower=line_foll, 
-    stoplight_detector=sl_det, 
-    flag_detector=fl_det
-)
-track_nav = vn.IntersectionNavigator(
-    line_follower=line_foll,
-    intersection_detector=in_det,
-)
-sg_det = sign_detector.SignDetector()
-
-line_detection_pipeline = [
-    ("adaptive_thres", lambda: line_foll.adaptive_thres(frame, drawing_frame)),
-    ("line_mask", lambda: line_foll.get_line_mask(frame, drawing_frame)),
-    ("line_candidates", lambda: line_foll.get_line_candidates(frame, drawing_frame)),
-    ("id_lines", lambda: line_foll.id_line_candidates(frame, drawing_frame)),
-    ("middle_line", lambda: line_foll.get_middle_line(frame, drawing_frame)),
-    ("persistent_line", lambda: line_foll.get_persistent_line(frame, drawing_frame)),
-    ("follow_line", lambda: line_foll.follow_line(frame, drawing_frame)),
-]
-
-stoplight_pipeline = [
-    ("stoplight_mask", lambda: sl_det.stoplight_mask( frame, drawing_frame=drawing_frame )),
-    ("identify_stoplight", lambda: print(sl_det.identify_stoplight( frame, drawing_frame=drawing_frame ))),
-]
-
-chessboard = [
-    ("get_flag_distance", lambda: print(fl_det.get_flag_distance(frame, drawing_frame=drawing_frame))),
-    ("get_flag_distance_nb", lambda: print(fl_det.get_flag_distance_nb(frame, drawing_frame=drawing_frame))),
-]
-
-intersection_pipeline = [
-    ("dark_mask", lambda: in_det.get_dark_mask(frame, drawing_frame=drawing_frame)),
-    ("find_dots", lambda: in_det.find_dots(frame, drawing_frame=drawing_frame)),
-    ("find_dotted_lines", lambda: in_det.find_dotted_lines(frame, drawing_frame=drawing_frame)),
-    ("find_intersection", lambda: in_det.find_intersection(frame, drawing_frame=drawing_frame)),
-]
-
-algorithms = [
-    ("follow_line", lambda: line_foll.follow_line(frame, drawing_frame)),
-    ("follow_line_w_signs", lambda: sl_nav.navigate(frame, drawing_frame, end_action=lambda: print("Done!"))),
-    ("navigate_track", lambda: track_nav.navigate(frame, drawing_frame))
-]
-
-signs_pipeline = [
-    ("process_frame", lambda: sg_det.process_frame(frame, drawing_frame)),
-    ("get_signs", lambda: sg_det.get_signs(frame, drawing_frame)),
-    ("get_best_sign", lambda: sg_det.get_best_sign(frame, drawing_frame)),
-    ("get_best_sign_nb", lambda: print(sg_det.get_best_sign_nb(frame, drawing_frame))),
-]
 
 if __name__ == "__main__":
-    try:
-        import keybrd
-        vp = VideoPlayer(r"resources\videos\signs_on_track.mp4")  # Path to the video file
-        re = keybrd.rising_edge # Function to check if a key is pressed once
-        pr = keybrd.is_pressed  # Function to check if a key is held down
-        tg = keybrd.is_toggled  # Function to check if a key is toggled
-        layers = signs_pipeline
-        layer = 1
-        
-        while True:
-            # Get current frame
-            vp.time_step()
-            vp.move(1 if pr('d') else -1 if pr('a') else 0)  # Move forward/backward
-            vp.move((1 if pr('e') else -1 if pr('q') else 0) * 10)  # Fast forward/backward
-            vp.step(1 if re('w') else -1 if re('s') else 0)  # Step forward/backward
-            mask = None
-            frame = vp.get_frame()
-            drawing_frame = frame.copy()
+    import visual_navigation as vn
+    from input_manager import keybrd
+    from yolo import get_signs
 
-            # Print the current frame
-            print(f"Frame {vp.frame_idx}/{vp.frame_count} ", end='')
+    line_foll = vn.LineFollower()
+    sl_det = vn.StoplightDetector()
+    fl_det = vn.FlagDetector()
+    in_det = vn.IntersectionDetector()
+    sl_nav = vn.StoplightNavigator(
+        line_follower=line_foll, 
+        stoplight_detector=sl_det, 
+        flag_detector=fl_det
+    )
+    track_nav = vn.IntersectionNavigator(
+        line_follower=line_foll,
+        intersection_detector=in_det,
+    )
+    sg_det = vn.SignDetector(get_signs)
 
-            # Choose layer to show
-            for i in range(1, 10):
-                if re(str(i)):
-                    layer = i
-                    break
+    line_detection_pipeline = [
+        ("adaptive_thres", lambda: line_foll.adaptive_thres(frame, drawing_frame)),
+        ("line_mask", lambda: line_foll.get_line_mask(frame, drawing_frame)),
+        ("line_candidates", lambda: line_foll.get_line_candidates(frame, drawing_frame)),
+        ("id_lines", lambda: line_foll.id_line_candidates(frame, drawing_frame)),
+        ("middle_line", lambda: line_foll.get_middle_line(frame, drawing_frame)),
+        ("persistent_line", lambda: line_foll.get_persistent_line(frame, drawing_frame)),
+        ("follow_line", lambda: line_foll.follow_line(frame, drawing_frame)),
+    ]
 
-            # Choose the layer to show. Layer 1 is do nothing. Layer 2 is index 0 in the pipeline, etc.
-            if layer >= 2 and layer <= len(layers) + 1:
-                name, func = layers[layer - 2]
-                print(name, end=', ')
-                func()
+    stoplight_pipeline = [
+        ("stoplight_mask", lambda: sl_det.stoplight_mask( frame, drawing_frame=drawing_frame )),
+        ("identify_stoplight", lambda: print(sl_det.identify_stoplight( frame, drawing_frame=drawing_frame ))),
+    ]
 
-            print()
-        
-            if re('p'): # Save the current frame as an image.
-                output_file = f"frame_{vp.frame_idx}_layer_{layer}.png"
-                cv2.imwrite(output_file, drawing_frame)
-                print(f"Saved frame {vp.frame_idx} as {output_file}")
+    chessboard = [
+        ("get_flag_distance", lambda: print(fl_det.get_flag_distance(frame, drawing_frame=drawing_frame))),
+        ("get_flag_distance_nb", lambda: print(fl_det.get_flag_distance_nb(frame, drawing_frame=drawing_frame))),
+    ]
 
-            # Show
-            vp.show_frame(drawing_frame, "Frame")
-    finally:
-        pass
+    intersection_pipeline = [
+        ("dark_mask", lambda: in_det.get_dark_mask(frame, drawing_frame=drawing_frame)),
+        ("find_dots", lambda: in_det.find_dots(frame, drawing_frame=drawing_frame)),
+        ("find_dotted_lines", lambda: in_det.find_dotted_lines(frame, drawing_frame=drawing_frame)),
+        ("find_intersection", lambda: in_det.find_intersection(frame, drawing_frame=drawing_frame)),
+    ]
+
+    algorithms = [
+        ("follow_line", lambda: line_foll.follow_line(frame, drawing_frame)),
+        ("follow_line_w_signs", lambda: sl_nav.navigate(frame, drawing_frame, end_action=lambda: print("Done!"))),
+        ("navigate_track", lambda: track_nav.navigate(frame, drawing_frame))
+    ]
+
+    signs_pipeline = [
+        ("get_signs", lambda: sg_det.get_signs(frame, drawing_frame)),
+        ("get_best_sign", lambda: sg_det.get_best_sign(frame, drawing_frame)),
+        ("get_best_sign_nb", lambda: print(sg_det.get_best_sign_nb(frame, drawing_frame))),
+    ]
+    
+    vp = VideoPlayer(r"resources\videos\signs_on_track.mp4")  # Path to the video file
+    re = keybrd.rising_edge # Function to check if a key is pressed once
+    pr = keybrd.is_pressed  # Function to check if a key is held down
+    tg = keybrd.is_toggled  # Function to check if a key is toggled
+    layers = signs_pipeline
+    layer = 1
+    
+    while True:
+        # Get current frame
+        vp.time_step()
+        vp.move(1 if pr('d') else -1 if pr('a') else 0)  # Move forward/backward
+        vp.move((1 if pr('e') else -1 if pr('q') else 0) * 10)  # Fast forward/backward
+        vp.step(1 if re('w') else -1 if re('s') else 0)  # Step forward/backward
+        mask = None
+        frame = vp.get_frame()
+        drawing_frame = frame.copy()
+
+        # Print the current frame
+        print(f"Frame {vp.frame_idx}/{vp.frame_count} ", end='')
+
+        # Choose layer to show
+        for i in range(1, 10):
+            if re(str(i)):
+                layer = i
+                break
+
+        # Choose the layer to show. Layer 1 is do nothing. Layer 2 is index 0 in the pipeline, etc.
+        if layer >= 2 and layer <= len(layers) + 1:
+            name, func = layers[layer - 2]
+            print(name, end=', ')
+            func()
+
+        print()
+    
+        if re('p'): # Save the current frame as an image.
+            output_file = f"frame_{vp.frame_idx}_layer_{layer}.png"
+            cv2.imwrite(output_file, drawing_frame)
+            print(f"Saved frame {vp.frame_idx} as {output_file}")
+
+        # Show
+        vp.show_frame(drawing_frame, "Frame")

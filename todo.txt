@@ -37,8 +37,13 @@
 - make a get_persistent_intersection(). It should color an intersection green only when it has been confirmed.
 -- make generic algs for location persistence (like in LineFollower) and state persistence (like in StoplightDetector)
 - make K and D not globals
+-- make pipeline more flexible by allowing steps to either take a frame, or the data from the previous frame
 +- batch classify rois
 + custom drawDetections
 + make generic nb polling method / class. make existing nb functions call it. It should allow multiple concurrent threads.
 +- wrap TrackNavigator (possibly rename or refactor such that it only handles intersection logic) in new class, that uses ML to decide turn, and stoplight detection to decide the authority of the internal LineFollower.
 +- organize modules into packages before I go insane
++ add signs to track
++ test TrackNavigator just with turn signs
++ ignore arrows when navigating, ignore signs when at intersection (although I ended up getting all confirmed signs and using ids 0-3 in the decision func )
+- add a set_sign_distances intermediate step before get_confirmed_signs. add the field to Sign

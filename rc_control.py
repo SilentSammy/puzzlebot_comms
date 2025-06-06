@@ -2,15 +2,16 @@ import os
 import math
 import cv2
 import time
-from input_manager.input_man import is_pressed, is_toggled, rising_edge  # your keybrd module for key state detection
+from input_manager.input_man import is_pressed, is_toggled, rising_edge, get_axis
 from pb_http_client import PuzzlebotHttpClient  # your custom client for sending commands
 import visual_navigation as vn
-# from remote_sign_detector import RemoteSignDetector
+from yolo import get_signs
 
 # Connection
 # puzzlebot = PuzzlebotHttpClient("http://192.168.137.99:5000", safe_mode=True)
 puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=False)
 
+# Navigation objects
 line_foll = vn.LineFollower()
 sl_det = vn.StoplightDetector()
 fl_det = vn.FlagDetector(pattern_size=(4, 3), square_size=0.02)
@@ -30,19 +31,17 @@ ol_con = vn.OpenLoopController(
     linear_factor=1.0,
     angular_factor=1.0,
 )
-# sg_det = RemoteSignDetector()
-# track_nav = vn.TrackNavigator(
-#     intersection_navigator=int_nav,
-#     sign_detector=sg_det,
-# )
-# vis_off = VisionOffloader(video_endpoint="video_feed", reception_endpoint="frame_data")
+sg_det = vn.SignDetector(get_signs)
+track_nav = vn.TrackNavigator(
+    intersection_navigator=int_nav,
+    sign_detector=sg_det,
+)
 
 # Maximum values for throttle and yaw
 max_yaw = math.radians(180)
 max_thr = 0.6
 
 def manual_control():
-    from input_manager import get_axis
     slow_thr = 0.2
     slow_yaw = math.radians(90)
 

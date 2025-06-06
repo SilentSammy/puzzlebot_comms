@@ -7,6 +7,123 @@ import time
 from collections import deque
 from itertools import combinations, count
 from backg_poller import BackgroundPoller
+from dataclasses import dataclass
+
+@dataclass
+class Sign:
+    id: int
+    box: np.ndarray
+    confidence: float
+    class_name: str
+
+class SignDetector:
+    def __init__(self,
+        get_signs_func,
+        history_len=4,
+        chain_length=8,
+        max_chain_gap=2,
+    ):
+        # _get_signs_func(frame, drawing_frame) -> boxes, sign_ids, confidences, class_names
+        self._get_signs_func = get_signs_func
+
+        # Define the signs and their associated class IDs
+        self._signs = {
+            0: "back",
+            1: "left",
+            2: "right",
+            3: "forw",
+            4: "stop",
+            5: "yield",
+            6: "road_work",
+        }
+
+        # Create a deque history for each sign
+        self.chain_length = chain_length  # Consecutive frames to consider a sign as seen
+        self.max_chain_gap = max_chain_gap  # Maximum gap in frames to consider a sign as seen
+        history_length = max(history_len, chain_length + max_chain_gap)
+        sign_ids = self._signs.keys()
+        self._sign_histories = {sign_id: deque(maxlen=history_length) for sign_id in sign_ids}
+
+        # Background poller for asynchronous processing
+        self._bg_poll = BackgroundPoller()
+
+    def get_signs(self, frame, drawing_frame=None, whitelist=None) -> list[Sign]:
+        result = self._get_signs_func(frame, drawing_frame)
+        boxes, sign_ids, confidences, class_names = result if result is not None else ([], [], [], [])
+        signs = []
+        for box, sign_id, confidence, class_name in zip(boxes, sign_ids, confidences, class_names):
+            if sign_id in self._signs:
+                signs.append(Sign(id=sign_id, box=box, confidence=confidence, class_name=class_name))
+
+        # Filter signs by whitelist if provided
+        if whitelist is not None:
+            signs = [sign for sign in signs if sign.id in whitelist]
+        return signs
+    
+    def get_confirmed_signs(self, frame, drawing_frame=None, whitelist=None) -> list:
+        """
+        Returns a list of confirmed Sign dataclass instances in the current frame,
+        using temporal filtering with self._sign_histories.
+        Draws confirmed signs in green and unconfirmed signs in yellow on the drawing_frame if provided.
+        """
+        signs = self.get_signs(frame, whitelist=whitelist)
+        detected_sign_ids = {sign.id for sign in signs}
+        for sign_id in self._sign_histories:
+            self._sign_histories[sign_id].append(sign_id in detected_sign_ids)
+
+        def is_confirmed(history):
+            return sum(history) >= (self.chain_length - self.max_chain_gap)
+
+        confirmed_signs = []
+        unconfirmed_signs = []
+        for sign in signs:
+            if is_confirmed(self._sign_histories[sign.id]):
+                confirmed_signs.append(sign)
+            else:
+                unconfirmed_signs.append(sign)
+
+        if drawing_frame is not None:
+            if confirmed_signs:
+                self.draw_signs(drawing_frame, confirmed_signs, color=(0, 255, 0))   # Green
+            if unconfirmed_signs:
+                self.draw_signs(drawing_frame, unconfirmed_signs, color=(0, 255, 255))  # Yellow
+
+        return confirmed_signs
+
+    def get_best_sign(self, frame, drawing_frame=None, whitelist=None) -> 'Sign':
+        """
+        Returns the best confirmed Sign dataclass instance in the current frame,
+        or None if no sign is confirmed.
+        """
+        confirmed_signs = self.get_confirmed_signs(frame, whitelist=whitelist)
+        best_sign = confirmed_signs[0] if confirmed_signs else None
+
+        if drawing_frame is not None:
+            best_id = best_sign.id if best_sign else -1
+            # Draw the confirmed sign in green
+            self.draw_signs(drawing_frame, [sign for sign in confirmed_signs if sign.id == best_id], color=(0, 255, 0))
+            # Draw all other confirmed signs in yellow
+            self.draw_signs(drawing_frame, [sign for sign in confirmed_signs if sign.id != best_id], color=(0, 255, 255))
+
+        return best_sign
+
+    def get_confirmed_signs_nb(self, frame, drawing_frame=None, whitelist=None):
+        return self._bg_poll.poll_with_annotated( frame, drawing_frame, lambda af: self.get_confirmed_signs(frame, af, whitelist=whitelist) )
+
+    def get_best_sign_nb(self, frame, drawing_frame=None, whitelist=None):
+        return self._bg_poll.poll_with_annotated( frame, drawing_frame, lambda af: self.get_best_sign(frame, af, whitelist=whitelist) )
+    
+    def draw_signs(self, frame, signs: list[Sign] , color=(0, 255, 0)):
+        """
+        Draws bounding boxes and labels for the given signs on the frame.
+        """
+        for sign in signs:
+            box = sign.box
+            if box is not None and len(box) == 4:
+                x1, y1, x2, y2 = map(int, box)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                label = f"{sign.class_name} ({sign.confidence:.2f})"
+                cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
 class LineFollower:
     def __init__(
@@ -901,26 +1018,28 @@ class OpenLoopController:
 
 class TrackNavigator:
     def __init__(self,
-        sign_detector,
+        sign_detector: SignDetector,
         intersection_navigator=None,
     ):
         self.inav = intersection_navigator or IntersectionNavigator()
         self.sd = sign_detector
-        self.last_sign = None  # Last detected sign
+        self.last_signs = None  # Last detected sign
         self.setup(self.inav)
     
     def setup(self, inav):
         def decision_func(frame):
-            # Use the sign detector to decide the next action
-            if self.last_sign is not None:
-                if self.last_sign.id in [0, 1, 2, 3]: # If it's a back, left, right or forward sign, return the corresponding action index
-                    return self.last_sign.id
+            # return the first sign id that is within 0-3, or return -1
+            sign_ids = [s.id for s in self.last_signs] if self.last_signs else []
+            for sign_id in sign_ids:
+                if 0 <= sign_id <= 3:
+                    return sign_id
+            return -1
         
         # Overwrite the decision function with the one that uses the sign detector
         inav.decision_func = decision_func
 
     def navigate(self, frame, drawing_frame=None):
-        self.last_sign = self.sd.get_best_sign_nb(frame, drawing_frame=drawing_frame)
+        self.last_signs = self.sd.get_confirmed_signs_nb(frame, drawing_frame=drawing_frame)
         thr, yaw = self.inav.navigate(frame, drawing_frame=drawing_frame)
         return thr, yaw
 
