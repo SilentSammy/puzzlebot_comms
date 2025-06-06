@@ -11,7 +11,7 @@ from pose_estimation import find_arucos, estimate_marker_pose
 import pose_estimation as pe
 from simple_pid import PID
 import visual_navigation as vn
-from sign_detector import SignDetector, OffloadedSignDetector
+from sign_detector import LocalSignDetector, OffloadedSignDetector, LocalSignDetector
 from vision_offloader import VisionOffloader
 
 # Connection
@@ -37,7 +37,7 @@ ol_con = vn.OpenLoopController(
     linear_factor=1.0,
     angular_factor=1.0,
 )
-# sg_det = SignDetector("gtsrb_cnn_98.h5")
+# sg_det = LocalSignDetector("gtsrb_cnn_98.h5")
 sg_det = OffloadedSignDetector()
 track_nav = vn.TrackNavigator(
     intersection_navigator=int_nav,
@@ -174,9 +174,6 @@ try:
         frame = puzzlebot.get_frame()
         drawing_frame = frame.copy()
         throttle, yaw = 0, 0
-
-        # vis_off.offload_frame(frame)
-        # print(vis_off.received_data)  # Debugging line to see received data
 
         # Optional screenshot or recording
         if rising_edge('p'):

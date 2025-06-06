@@ -23,6 +23,4 @@ class VisionOffloader:
     def _receive_data(self, request):
         # Receive JSON data from the request body
         self.received_data = request.get_json(silent=True)
-        if self.received_data is None:
-            return "No data received", 400
         return "Data received successfully", 200

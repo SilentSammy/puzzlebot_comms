@@ -913,9 +913,8 @@ class TrackNavigator:
         def decision_func(frame):
             # Use the sign detector to decide the next action
             if self.last_sign is not None:
-                x, y, w, h, cls_id, score, sign_id, sign_name = self.last_sign
-                if sign_id in [0, 1, 2, 3]: # If it's a back, left, right or forward sign, return the corresponding action index
-                    return sign_id
+                if self.last_sign.id in [0, 1, 2, 3]: # If it's a back, left, right or forward sign, return the corresponding action index
+                    return self.last_sign.id
         
         # Overwrite the decision function with the one that uses the sign detector
         inav.decision_func = decision_func
