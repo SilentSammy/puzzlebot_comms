@@ -8,9 +8,9 @@ Each function accepts multiple names as varargs, returning the logical OR across
 Re-exports get_axis from gamepad for axis polling.
 """
 
-import keybrd
-import gamepad
-from gamepad import get_axis
+from . import keybrd
+from . import gamepad
+from .gamepad import get_axis
 
 
 def _is_gamepad(name: str) -> bool:

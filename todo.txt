@@ -41,5 +41,4 @@
 + custom drawDetections
 + make generic nb polling method / class. make existing nb functions call it. It should allow multiple concurrent threads.
 +- wrap TrackNavigator (possibly rename or refactor such that it only handles intersection logic) in new class, that uses ML to decide turn, and stoplight detection to decide the authority of the internal LineFollower.
-- Make abstract SignDetector and concrete LocalSignDetector & OffloadedSignDetector
--- organize modules into packages before I go insane
++- organize modules into packages before I go insane
