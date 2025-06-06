@@ -1,13 +1,13 @@
 import cv2
-import numpy as np
 import time
 import traceback
-from sign_detector import LocalSignDetector
+from local_sign_detector import LocalSignDetector
 import requests
 
 BASE_URL = "http://127.0.0.1:5002/"
 STREAM_URL = BASE_URL + "video_feed"
 DATA_URL = BASE_URL + "frame_data"
+DISPLAY = False
 
 sg_det = LocalSignDetector("gtsrb_cnn_98.h5")
 
@@ -70,7 +70,8 @@ def main():
             print(f"Error in process_frame: {e}")
             traceback.print_exc()
             processed = frame  # fallback to original frame
-        cv2.imshow("Stream", processed)
+        if DISPLAY:
+            cv2.imshow("Stream", processed)
         if cv2.waitKey(1) & 0xFF == 27:  # ESC to exit
             break
     if cap:

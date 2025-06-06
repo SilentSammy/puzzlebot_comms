@@ -1,18 +1,11 @@
 import os
-import numpy as np
 import math
 import cv2
-import requests
 import time
-import threading
 from input_man import is_pressed, is_toggled, rising_edge  # your keybrd module for key state detection
 from pb_http_client import PuzzlebotHttpClient  # your custom client for sending commands
-from pose_estimation import find_arucos, estimate_marker_pose
-import pose_estimation as pe
-from simple_pid import PID
 import visual_navigation as vn
-from sign_detector import LocalSignDetector, OffloadedSignDetector, LocalSignDetector
-from vision_offloader import VisionOffloader
+from remote_sign_detector import RemoteSignDetector
 
 # Connection
 # puzzlebot = PuzzlebotHttpClient("http://192.168.137.99:5000", safe_mode=True)
@@ -37,8 +30,7 @@ ol_con = vn.OpenLoopController(
     linear_factor=1.0,
     angular_factor=1.0,
 )
-# sg_det = LocalSignDetector("gtsrb_cnn_98.h5")
-sg_det = OffloadedSignDetector()
+sg_det = RemoteSignDetector()
 track_nav = vn.TrackNavigator(
     intersection_navigator=int_nav,
     sign_detector=sg_det,

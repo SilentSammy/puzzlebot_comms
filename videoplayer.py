@@ -7,7 +7,7 @@ import time
 import keybrd
 from collections import deque
 import visual_navigation as vn
-import sign_detector
+import local_sign_detector
 
 class VideoPlayer:
     def __init__(self, frame_source):
@@ -128,7 +128,7 @@ track_nav = vn.IntersectionNavigator(
     line_follower=line_foll,
     intersection_detector=in_det,
 )
-sg_det = sign_detector.LocalSignDetector("gtsrb_cnn_98.h5")
+sg_det = local_sign_detector.LocalSignDetector("gtsrb_cnn_98.h5")
 
 line_detection_pipeline = [
     ("adaptive_thres", lambda: line_foll.adaptive_thres(frame, drawing_frame)),
