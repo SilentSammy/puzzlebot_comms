@@ -1,3 +1,6 @@
+push: scp -r .\cam_navigation puzzlebot@192.168.43.125:/home/puzzlebot/ros2_ws/src
+pull: scp -r puzzlebot@192.168.43.125:/home/puzzlebot/ros2_ws/src/cam_navigation .\
+
 + move algorithms to visual_navigation.py
 + fix direction detection issue
 + allow passing a dedicated drawing frame

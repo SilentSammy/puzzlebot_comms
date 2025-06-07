@@ -6,6 +6,149 @@ import cv2
 import time
 from collections import deque
 from itertools import combinations, count
+from cam_navigation.backg_poller import BackgroundPoller
+from dataclasses import dataclass
+from typing import Optional
+from enum import Enum
+
+class SignType(Enum):
+    BACK = 0
+    LEFT = 1
+    RIGHT = 2
+    FORWARD = 3
+    STOP = 4
+    YIELD = 5
+    ROAD_WORK = 6
+
+@dataclass
+class Sign:
+    type: SignType
+    box: np.ndarray
+    confidence: float
+    approx_dist: Optional[float] = None
+
+class SignDetector:
+    def __init__(self,
+        get_signs_func,
+        history_len=4,
+        chain_length=8,
+        max_chain_gap=2,
+        ref_height=50, # how high the sign is in pixels when at a distance of 1 meter
+    ):
+        # _get_signs_func(frame, drawing_frame) -> boxes, sign_types, confidences, class_names
+        self._get_signs_func = get_signs_func
+
+        self.ref_height = ref_height  # Reference height of the sign in pixels at 1 meter distance
+
+        # Create a deque history for each sign
+        self.chain_length = chain_length  # Consecutive frames to consider a sign as seen
+        self.max_chain_gap = max_chain_gap  # Maximum gap in frames to consider a sign as seen
+        history_length = max(history_len, chain_length + max_chain_gap)
+        self._sign_histories = {sign_type: deque(maxlen=history_length) for sign_type in SignType}
+
+        # Background poller for asynchronous processing
+        self._bg_poll = BackgroundPoller()
+
+    def get_signs(self, frame, drawing_frame=None):
+        """ Converts lists of boxes, sign_types, confidences, and class_names into a list of Sign dataclass instances."""
+        result = self._get_signs_func(frame)
+        boxes, sign_types, confidences, class_names = result if result is not None else ([], [], [], [])
+        signs = []
+        for box, sign_type, confidence, class_name in zip(boxes, sign_types, confidences, class_names):
+            if int(sign_type) in [item.value for item in SignType]:
+                signs.append(Sign(type=SignType(int(sign_type)), box=box, confidence=float(confidence)))
+        
+        # Draw the signs on the drawing frame if provided
+        if drawing_frame is not None:
+            self.draw_signs(drawing_frame, signs)
+        return signs
+    
+    def set_sign_distances(self, frame, drawing_frame=None):
+        """
+        Estimates the distance of each sign based on its height in pixels.
+        The reference height is used to calculate the distance.
+        """
+        signs = self.get_signs(frame)
+        for sign in signs:
+            if sign.box is not None and len(sign.box) == 4:
+                # Calculate the height of the bounding box
+                box_height = abs(sign.box[1] - sign.box[3])
+                # Estimate the distance based on the reference height
+                if box_height > 0:
+                    sign.approx_dist = self.ref_height / box_height
+                else:
+                    sign.approx_dist = None
+        if drawing_frame is not None:
+            self.draw_signs(drawing_frame, signs)
+        return signs
+
+    def get_confirmed_signs(self, frame, drawing_frame=None) -> list:
+        """
+        Returns a list of confirmed Sign dataclass instances in the current frame,
+        using temporal filtering with self._sign_histories.
+        Draws confirmed signs in green and unconfirmed signs in yellow on the drawing_frame if provided.
+        """
+        signs = self.set_sign_distances(frame)
+        detected_sign_types = {sign.type for sign in signs}
+        for sign_type in self._sign_histories:
+            self._sign_histories[sign_type].append(sign_type in detected_sign_types)
+
+        def is_confirmed(history):
+            return sum(history) >= (self.chain_length - self.max_chain_gap)
+
+        confirmed_signs = []
+        unconfirmed_signs = []
+        for sign in signs:
+            if is_confirmed(self._sign_histories[sign.type]):
+                confirmed_signs.append(sign)
+            else:
+                unconfirmed_signs.append(sign)
+
+        if drawing_frame is not None:
+            if confirmed_signs:
+                self.draw_signs(drawing_frame, confirmed_signs, color=(0, 255, 0))   # Green
+            if unconfirmed_signs:
+                self.draw_signs(drawing_frame, unconfirmed_signs, color=(0, 255, 255))  # Yellow
+
+        return confirmed_signs
+
+    def get_best_sign(self, frame, drawing_frame=None) -> 'Sign':
+        """
+        Returns the best confirmed Sign dataclass instance in the current frame,
+        or None if no sign is confirmed.
+        """
+        confirmed_signs = self.get_confirmed_signs(frame)
+        best_sign = confirmed_signs[0] if confirmed_signs else None
+
+        if drawing_frame is not None:
+            best_id = best_sign.id if best_sign else -1
+            # Draw the confirmed sign in green
+            self.draw_signs(drawing_frame, [sign for sign in confirmed_signs if sign.id == best_id], color=(0, 255, 0))
+            # Draw all other confirmed signs in yellow
+            self.draw_signs(drawing_frame, [sign for sign in confirmed_signs if sign.id != best_id], color=(0, 255, 255))
+
+        return best_sign
+
+    def get_confirmed_signs_nb(self, frame, drawing_frame=None):
+        return self._bg_poll.poll_with_annotated( frame, drawing_frame, lambda af: self.get_confirmed_signs(frame, af) )
+
+    def get_best_sign_nb(self, frame, drawing_frame=None):
+        return self._bg_poll.poll_with_annotated( frame, drawing_frame, lambda af: self.get_best_sign(frame, af) )
+    
+    def draw_signs(self, frame, signs, color=(0, 255, 0)):
+        """
+        Draws bounding boxes and labels for the given signs on the frame.
+        """
+        for sign in signs:
+            box = sign.box
+            if box is not None and len(box) == 4:
+                x1, y1, x2, y2 = map(int, box)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                label = f"{sign.type.name} ({sign.confidence:.2f})"
+                # Show approx_distance if available
+                if sign.approx_dist is not None:
+                    label += f" [{sign.approx_dist:.2f}m]"
+                cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
 class LineFollower:
     def __init__(
@@ -27,8 +170,11 @@ class LineFollower:
         align_thres=0.2,
         Kp = 0.6,
         Ki = 0,
-        Kd = 0.1
+        Kd = 0.1,
+        auth=1.0
     ):
+        self.authority = auth  # Authority of the line follower, used in follow_line method
+
         # Adaptive thresholding parameters
         self.blur_kernel_size = blur_kernel_size
         self.adaptive_method = adaptive_method
@@ -240,9 +386,10 @@ class LineFollower:
         if chosen_line is not None:
             return chosen_line[0], chosen_line[1], self._chosen_id
 
-    def follow_line(self, frame, drawing_frame=None, authority=1.0):
+    def follow_line(self, frame, drawing_frame=None, authority=None):
         """ Follow the line in the frame """
         # Ensure authority is within [0, 1] range
+        authority = authority if authority is not None else self.authority if self.authority is not None else 1.0
         authority = max(0, min(authority, 1.0))
 
         # Get and unpack the line
@@ -273,6 +420,8 @@ class LineFollower:
                 cv2.line(drawing_frame, (center_x, 0), (center_x, frame_height), (255, 0, 0), 2)
                 cv2.putText(drawing_frame, f"v: {throttle:.2f} m/s", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
                 cv2.putText(drawing_frame, f"w: {math.degrees(yaw):.2f} deg/s", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+                if authority != 1.0:
+                    cv2.putText(drawing_frame, f"Authority: {authority * 100:.1f}%", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
         else:
             # Write "Searching for line" on the frame
             cv2.putText(drawing_frame, "Searching for line", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
@@ -303,6 +452,7 @@ class StoplightDetector:
                  edge_thres_y=0.0,
                  chain_length=4,
                  max_chain_gap=1,
+                 history_len=5
         ):
 
         # Adaptive color thresholding parameters
@@ -333,7 +483,7 @@ class StoplightDetector:
         self.max_chain_gap = max_chain_gap  # Maximum gap in frames to consider a color as seen
 
         # Identify stoplight static variables
-        color_history_len = chain_length + max_chain_gap
+        color_history_len = max(history_len, chain_length + max_chain_gap)
         self.red_history = deque(maxlen=color_history_len)
         self.yellow_history = deque(maxlen=color_history_len)
         self.green_history = deque(maxlen=color_history_len)
@@ -509,11 +659,8 @@ class FlagDetector:
         self.pattern_size = pattern_size    # Chessboard pattern size
         self.square_size = square_size      # Size of each square in meters
 
-        # Multi-threading static variables
-        self._worker = None
-        self._lock = threading.Lock()
-        self._last_result = None
-        self._last_drawing_frame = None
+        # Better multi-threading logic
+        self._bg_poll = BackgroundPoller()
 
         self.dist_thres = dist_thres  # Distance threshold in meters to consider the flag close
         self.end_reached = False  # Flag to indicate if the end has been reached
@@ -552,34 +699,7 @@ class FlagDetector:
         return dist
     
     def get_flag_distance_nb(self, frame, drawing_frame=None):
-        with self._lock:
-            result = self._last_result
-            annotated_frame = self._last_drawing_frame
-            
-        
-        # If processing is not ongoing, process in background
-        if self._worker is None or not self._worker.is_alive():
-            def worker_func(frame_copy, drawing_frame):
-                dist = self.get_flag_distance( frame_copy, drawing_frame=drawing_frame )
-                with self._lock:
-                    self._last_result = dist
-                    self._last_drawing_frame = drawing_frame
-        
-            # Start the worker thread
-            t = threading.Thread(
-                target=worker_func,
-                args=(frame.copy(), np.zeros_like(frame)),
-            )
-            t.daemon = True
-            t.start()
-            self._worker = t
-        
-        if drawing_frame is not None and annotated_frame is not None:
-            # Overwrite the drawing_frame pixels with annotated_frame pixels wherever the mask is True.
-            non_black_mask = np.any(annotated_frame != 0, axis=2)
-            drawing_frame[non_black_mask] = annotated_frame[non_black_mask]
-
-        return result
+        return self._bg_poll.poll_with_annotated( frame, drawing_frame, lambda af: self.get_flag_distance(frame, af) )
 
     def flag_reached(self, frame, drawing_frame=None, non_blocking=True):
         if not self.end_reached:
@@ -775,11 +895,11 @@ class IntersectionDetector:
 
         return throttle, yaw
 
-class TrackNavigator:
+class IntersectionNavigator:
     def __init__(self,
         line_follower=None,
         intersection_detector=None,
-        controller=None,
+        ol_controller=None,
         decision_func=None,
         decision_action=None,
         backward = None,
@@ -789,7 +909,7 @@ class TrackNavigator:
     ):
         self.lf = line_follower or LineFollower()
         self.id = intersection_detector or IntersectionDetector()
-        self.controller = controller or OpenLoopController()
+        self.controller = ol_controller or OpenLoopController()
 
         # Parameters
         self.decision_func = decision_func      # Function to decide the next action
@@ -838,7 +958,7 @@ class TrackNavigator:
                 action_index = decision_func(frame)
 
 
-                if action_index != -1:
+                if action_index is not None and action_index != -1:
                     action_labels = ["backward", "turn_left", "turn_right", "forward"]
                     print(f"Decision made: {action_labels[action_index]}")
                     if self.decision_action:
@@ -926,6 +1046,90 @@ class OpenLoopController:
             throttle = x * self.linear_factor / t
             yaw = theta * self.angular_factor / t
             return throttle, yaw
+
+class TrackNavigator:
+    def __init__(self,
+        sign_detector: SignDetector,
+        intersection_navigator=None,
+        flag_detector=None,
+        end_action=None,
+    ):
+        # Navigation components
+        self.inav = intersection_navigator or IntersectionNavigator()
+        self.sd = sign_detector
+        self.fd = flag_detector or FlagDetector()
+
+        # User settings
+        self.end_action = end_action
+
+        # Static variables
+        self.last_signs = None  # Last detected sign
+        self.setup(self.inav)
+        self.yielding = False  # Flag to indicate if a yield sign was detected
+    
+    def setup(self, inav):
+        def decision_func(frame):
+            # Once this is polled we can disable the yielding flag, because we've reached the intersection
+            self.yielding = False
+
+            # return the first sign id that is within 0-3, or return -1
+            sign_types = [s.type.value for s in self.last_signs] if self.last_signs else []
+            for sign_type in sign_types:
+                if 0 <= sign_type <= 3:
+                    return sign_type
+            return -1
+        
+        # Overwrite the decision function with the one that uses the sign detector
+        inav.decision_func = decision_func
+
+    def navigate(self, frame, drawing_frame=None):
+        if self.fd.end_reached:
+            return 0.0, 0.0  # If the end has been reached, stop the robot
+
+        ignore_intersection = False
+
+        # Detect flags in the frame
+        flag_dist = self.fd.get_flag_distance_nb(frame, drawing_frame=drawing_frame)
+        ignore_intersection = flag_dist is not None # If a flag is detected, ignore intersections
+        if flag_dist is not None and flag_dist <= self.fd.dist_thres:
+            self.fd.end_reached = True  # Set the end reached flag
+            if self.end_action:
+                self.end_action()
+            return 0.0, 0.0  # Stop the robot if the flag is reached
+        
+        # Reset the authority of the line follower
+        lf:LineFollower = self.inav.lf # Get the line follower from the intersection navigator
+        lf.authority = 1.0
+                
+        # Detect signs in the frame
+        self.last_signs = self.sd.get_confirmed_signs_nb(frame, drawing_frame=drawing_frame)
+
+        # Get the closest sign, if any signs are detected
+        if self.last_signs:
+            # Get the closest sign of each sign type
+            closest_signs = {}
+            for sign in self.last_signs:
+                if sign.type not in closest_signs or sign.approx_dist < closest_signs[sign.type].approx_dist:
+                    closest_signs[sign.type] = sign
+
+            if SignType.STOP in closest_signs and closest_signs[SignType.STOP].approx_dist < 0.4:
+                lf.authority = 0.0
+                ignore_intersection = True # Don't attempt to navigate intersections if a stop sign is detected
+            elif SignType.ROAD_WORK in closest_signs and closest_signs[SignType.ROAD_WORK].approx_dist < 0.75:
+                lf.authority = 0.5
+            elif SignType.YIELD in closest_signs and closest_signs[SignType.YIELD].approx_dist < 0.75:
+                self.yielding = True  # Set yielding flag to True
+
+        # If yielding is active, we need to slow down until we reach the intersection
+        if self.yielding:
+            lf.authority = 0.5
+
+        # If ignoring intersections, just follow the line. Otherwise, use the intersection navigator.
+        if ignore_intersection:
+            thr, yaw = lf.follow_line(frame, drawing_frame=drawing_frame)
+        else:
+            thr, yaw = self.inav.navigate(frame, drawing_frame=drawing_frame)
+        return thr, yaw
 
 # SHARED VISION PIPELINE
 def adaptive_color_thresh(frame, drawing_frame=None,
@@ -1258,50 +1462,6 @@ def clear_lost_objects(tracked_objs, lost_objs, lost_timeout, is_lost, get_lost_
                 tracked_objs.remove(obj)
                 if get_id is not None:
                     print(f"Object {get_id(obj)} removed after being lost for {lost_timeout} seconds")
-
-# END NAVIGATION ALGORITHMS (THESE RETURN THROTTLE AND YAW) (NON-BLOCKING, MUST BE CALLED IN A LOOP)
-def sequence(actions=None, when_done=None, speed_factor=1):
-    """ Execute a sequence of actions. Each action is a tuple (v, w, t) """
-
-    # Static variables
-    sequence.last_time = sequence.last_time if hasattr(sequence, "last_time") else time.time()
-    sequence.elapsed_time = sequence.elapsed_time if hasattr(sequence, "elapsed_time") else 0
-    
-    # Define the sequence of actions or use default
-    actions = actions or [ # v, w, t
-        (0.15, 0, 2), # Move 30cm forward
-        (0, -math.radians(30), 3), # 90° turn
-        (0.15, 0, 2), # Move 30cm forward
-    ]
-    actions = [(v*speed_factor, w*speed_factor, t) for v, w, t in actions]
-    total_time = sum([t for _, _, t in actions])
-
-    # Get the elapsed time
-    since_last = time.time() - sequence.last_time
-    if since_last > 0.5: # If the time since last call is too long, reset the timer.
-        sequence.elapsed_time = 0
-        sequence.last_time = time.time()
-        since_last = 0
-    sequence.elapsed_time += since_last * speed_factor
-    sequence.last_time = time.time()
-
-    elapsed = sequence.elapsed_time
-    if elapsed > total_time: # done
-        if when_done:
-            when_done()
-    elapsed =  elapsed % total_time
-
-    action = None
-    ac_time = 0
-    for i, act in enumerate(actions):
-        ac_time += act[2]
-        if elapsed < ac_time:
-            action = act
-            break
-    
-    throttle, yaw = 0, 0
-    throttle, yaw, _ = action
-    return throttle, yaw
 
 # GLOBAL CAMERA PARAMETERS
 K = np.array([

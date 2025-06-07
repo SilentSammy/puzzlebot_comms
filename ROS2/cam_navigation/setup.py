@@ -23,4 +23,10 @@ setup(
             'cam_navigation = cam_navigation.cam_navigation:main'
         ],
     },
+
+    include_package_data=True,
+    package_data={
+        # key = package name; value = list of globs
+        package_name: ['best.pt'],
+    },
 )

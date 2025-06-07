@@ -5,7 +5,8 @@ import time
 import threading
 
 class PuzzlebotHttpClient:
-    def __init__(self, base_url="http://192.168.137.139:5000", safe_mode=True):
+    def __init__(self, base_url="http://192.168.137.139:5000", safe_mode=True, id = 0):
+        self.id = id
         self.base_url = base_url
         self.cap = None
         self.safe_mode = safe_mode
