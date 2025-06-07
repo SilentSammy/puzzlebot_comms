@@ -8,13 +8,24 @@ from collections import deque
 from itertools import combinations, count
 from backg_poller import BackgroundPoller
 from dataclasses import dataclass
+from typing import Optional
+from enum import Enum
+
+class SignType(Enum):
+    BACK = 0
+    LEFT = 1
+    RIGHT = 2
+    FORWARD = 3
+    STOP = 4
+    YIELD = 5
+    ROAD_WORK = 6
 
 @dataclass
 class Sign:
-    id: int
+    type: SignType
     box: np.ndarray
     confidence: float
-    class_name: str
+    approx_dist: Optional[float] = None
 
 class SignDetector:
     def __init__(self,
@@ -22,54 +33,65 @@ class SignDetector:
         history_len=4,
         chain_length=8,
         max_chain_gap=2,
+        ref_height=50, # how high the sign is in pixels when at a distance of 1 meter
     ):
-        # _get_signs_func(frame, drawing_frame) -> boxes, sign_ids, confidences, class_names
+        # _get_signs_func(frame, drawing_frame) -> boxes, sign_types, confidences, class_names
         self._get_signs_func = get_signs_func
 
-        # Define the signs and their associated class IDs
-        self._signs = {
-            0: "back",
-            1: "left",
-            2: "right",
-            3: "forw",
-            4: "stop",
-            5: "yield",
-            6: "road_work",
-        }
+        self.ref_height = ref_height  # Reference height of the sign in pixels at 1 meter distance
 
         # Create a deque history for each sign
         self.chain_length = chain_length  # Consecutive frames to consider a sign as seen
         self.max_chain_gap = max_chain_gap  # Maximum gap in frames to consider a sign as seen
         history_length = max(history_len, chain_length + max_chain_gap)
-        sign_ids = self._signs.keys()
-        self._sign_histories = {sign_id: deque(maxlen=history_length) for sign_id in sign_ids}
+        self._sign_histories = {sign_type: deque(maxlen=history_length) for sign_type in SignType}
 
         # Background poller for asynchronous processing
         self._bg_poll = BackgroundPoller()
 
-    def get_signs(self, frame, drawing_frame=None, whitelist=None) -> list[Sign]:
-        result = self._get_signs_func(frame, drawing_frame)
-        boxes, sign_ids, confidences, class_names = result if result is not None else ([], [], [], [])
+    def get_signs(self, frame, drawing_frame=None) -> list[Sign]:
+        """ Converts lists of boxes, sign_types, confidences, and class_names into a list of Sign dataclass instances."""
+        result = self._get_signs_func(frame)
+        boxes, sign_types, confidences, class_names = result if result is not None else ([], [], [], [])
         signs = []
-        for box, sign_id, confidence, class_name in zip(boxes, sign_ids, confidences, class_names):
-            if sign_id in self._signs:
-                signs.append(Sign(id=sign_id, box=box, confidence=confidence, class_name=class_name))
-
-        # Filter signs by whitelist if provided
-        if whitelist is not None:
-            signs = [sign for sign in signs if sign.id in whitelist]
+        for box, sign_type, confidence, class_name in zip(boxes, sign_types, confidences, class_names):
+            if int(sign_type) in [item.value for item in SignType]:
+                signs.append(Sign(type=SignType(int(sign_type)), box=box, confidence=float(confidence)))
+        
+        # Draw the signs on the drawing frame if provided
+        if drawing_frame is not None:
+            self.draw_signs(drawing_frame, signs)
         return signs
     
-    def get_confirmed_signs(self, frame, drawing_frame=None, whitelist=None) -> list:
+    def set_sign_distances(self, frame, drawing_frame=None) -> list[Sign]:
+        """
+        Estimates the distance of each sign based on its height in pixels.
+        The reference height is used to calculate the distance.
+        """
+        signs = self.get_signs(frame)
+        for sign in signs:
+            if sign.box is not None and len(sign.box) == 4:
+                # Calculate the height of the bounding box
+                box_height = abs(sign.box[1] - sign.box[3])
+                # Estimate the distance based on the reference height
+                if box_height > 0:
+                    sign.approx_dist = self.ref_height / box_height
+                else:
+                    sign.approx_dist = None
+        if drawing_frame is not None:
+            self.draw_signs(drawing_frame, signs)
+        return signs
+
+    def get_confirmed_signs(self, frame, drawing_frame=None) -> list:
         """
         Returns a list of confirmed Sign dataclass instances in the current frame,
         using temporal filtering with self._sign_histories.
         Draws confirmed signs in green and unconfirmed signs in yellow on the drawing_frame if provided.
         """
-        signs = self.get_signs(frame, whitelist=whitelist)
-        detected_sign_ids = {sign.id for sign in signs}
-        for sign_id in self._sign_histories:
-            self._sign_histories[sign_id].append(sign_id in detected_sign_ids)
+        signs = self.set_sign_distances(frame)
+        detected_sign_types = {sign.type for sign in signs}
+        for sign_type in self._sign_histories:
+            self._sign_histories[sign_type].append(sign_type in detected_sign_types)
 
         def is_confirmed(history):
             return sum(history) >= (self.chain_length - self.max_chain_gap)
@@ -77,7 +99,7 @@ class SignDetector:
         confirmed_signs = []
         unconfirmed_signs = []
         for sign in signs:
-            if is_confirmed(self._sign_histories[sign.id]):
+            if is_confirmed(self._sign_histories[sign.type]):
                 confirmed_signs.append(sign)
             else:
                 unconfirmed_signs.append(sign)
@@ -90,12 +112,12 @@ class SignDetector:
 
         return confirmed_signs
 
-    def get_best_sign(self, frame, drawing_frame=None, whitelist=None) -> 'Sign':
+    def get_best_sign(self, frame, drawing_frame=None) -> 'Sign':
         """
         Returns the best confirmed Sign dataclass instance in the current frame,
         or None if no sign is confirmed.
         """
-        confirmed_signs = self.get_confirmed_signs(frame, whitelist=whitelist)
+        confirmed_signs = self.get_confirmed_signs(frame)
         best_sign = confirmed_signs[0] if confirmed_signs else None
 
         if drawing_frame is not None:
@@ -107,13 +129,13 @@ class SignDetector:
 
         return best_sign
 
-    def get_confirmed_signs_nb(self, frame, drawing_frame=None, whitelist=None):
-        return self._bg_poll.poll_with_annotated( frame, drawing_frame, lambda af: self.get_confirmed_signs(frame, af, whitelist=whitelist) )
+    def get_confirmed_signs_nb(self, frame, drawing_frame=None):
+        return self._bg_poll.poll_with_annotated( frame, drawing_frame, lambda af: self.get_confirmed_signs(frame, af) )
 
-    def get_best_sign_nb(self, frame, drawing_frame=None, whitelist=None):
-        return self._bg_poll.poll_with_annotated( frame, drawing_frame, lambda af: self.get_best_sign(frame, af, whitelist=whitelist) )
+    def get_best_sign_nb(self, frame, drawing_frame=None):
+        return self._bg_poll.poll_with_annotated( frame, drawing_frame, lambda af: self.get_best_sign(frame, af) )
     
-    def draw_signs(self, frame, signs: list[Sign] , color=(0, 255, 0)):
+    def draw_signs(self, frame, signs: list[Sign], color=(0, 255, 0)):
         """
         Draws bounding boxes and labels for the given signs on the frame.
         """
@@ -122,7 +144,10 @@ class SignDetector:
             if box is not None and len(box) == 4:
                 x1, y1, x2, y2 = map(int, box)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                label = f"{sign.class_name} ({sign.confidence:.2f})"
+                label = f"{sign.type.name} ({sign.confidence:.2f})"
+                # Show approx_distance if available
+                if sign.approx_dist is not None:
+                    label += f" [{sign.approx_dist:.2f}m]"
                 cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
 class LineFollower:
@@ -145,8 +170,11 @@ class LineFollower:
         align_thres=0.2,
         Kp = 0.6,
         Ki = 0,
-        Kd = 0.1
+        Kd = 0.1,
+        auth=1.0
     ):
+        self.authority = auth  # Authority of the line follower, used in follow_line method
+
         # Adaptive thresholding parameters
         self.blur_kernel_size = blur_kernel_size
         self.adaptive_method = adaptive_method
@@ -358,9 +386,10 @@ class LineFollower:
         if chosen_line is not None:
             return chosen_line[0], chosen_line[1], self._chosen_id
 
-    def follow_line(self, frame, drawing_frame=None, authority=1.0):
+    def follow_line(self, frame, drawing_frame=None, authority=None):
         """ Follow the line in the frame """
         # Ensure authority is within [0, 1] range
+        authority = authority if authority is not None else self.authority if self.authority is not None else 1.0
         authority = max(0, min(authority, 1.0))
 
         # Get and unpack the line
@@ -391,6 +420,8 @@ class LineFollower:
                 cv2.line(drawing_frame, (center_x, 0), (center_x, frame_height), (255, 0, 0), 2)
                 cv2.putText(drawing_frame, f"v: {throttle:.2f} m/s", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
                 cv2.putText(drawing_frame, f"w: {math.degrees(yaw):.2f} deg/s", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+                if authority != 1.0:
+                    cv2.putText(drawing_frame, f"Authority: {authority * 100:.1f}%", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
         else:
             # Write "Searching for line" on the frame
             cv2.putText(drawing_frame, "Searching for line", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
@@ -1020,27 +1051,84 @@ class TrackNavigator:
     def __init__(self,
         sign_detector: SignDetector,
         intersection_navigator=None,
+        flag_detector=None,
+        end_action=None,
     ):
+        # Navigation components
         self.inav = intersection_navigator or IntersectionNavigator()
         self.sd = sign_detector
-        self.last_signs = None  # Last detected sign
+        self.fd = flag_detector or FlagDetector()
+
+        # User settings
+        self.end_action = end_action
+
+        # Static variables
+        self.last_signs:list[Sign] = None  # Last detected sign
         self.setup(self.inav)
+        self.yielding = False  # Flag to indicate if a yield sign was detected
     
     def setup(self, inav):
         def decision_func(frame):
+            # Once this is polled we can disable the yielding flag, because we've reached the intersection
+            self.yielding = False
+
             # return the first sign id that is within 0-3, or return -1
-            sign_ids = [s.id for s in self.last_signs] if self.last_signs else []
-            for sign_id in sign_ids:
-                if 0 <= sign_id <= 3:
-                    return sign_id
+            sign_types = [s.type.value for s in self.last_signs] if self.last_signs else []
+            for sign_type in sign_types:
+                if 0 <= sign_type <= 3:
+                    return sign_type
             return -1
         
         # Overwrite the decision function with the one that uses the sign detector
         inav.decision_func = decision_func
 
     def navigate(self, frame, drawing_frame=None):
+        if self.fd.end_reached:
+            return 0.0, 0.0  # If the end has been reached, stop the robot
+
+        ignore_intersection = False
+
+        # Detect flags in the frame
+        flag_dist = self.fd.get_flag_distance_nb(frame, drawing_frame=drawing_frame)
+        ignore_intersection = flag_dist is not None # If a flag is detected, ignore intersections
+        if flag_dist is not None and flag_dist <= self.fd.dist_thres:
+            self.fd.end_reached = True  # Set the end reached flag
+            if self.end_action:
+                self.end_action()
+            return 0.0, 0.0  # Stop the robot if the flag is reached
+        
+        # Reset the authority of the line follower
+        lf:LineFollower = self.inav.lf # Get the line follower from the intersection navigator
+        lf.authority = 1.0
+                
+        # Detect signs in the frame
         self.last_signs = self.sd.get_confirmed_signs_nb(frame, drawing_frame=drawing_frame)
-        thr, yaw = self.inav.navigate(frame, drawing_frame=drawing_frame)
+
+        # Get the closest sign, if any signs are detected
+        if self.last_signs:
+            # Get the closest sign of each sign type
+            closest_signs = {}
+            for sign in self.last_signs:
+                if sign.type not in closest_signs or sign.approx_dist < closest_signs[sign.type].approx_dist:
+                    closest_signs[sign.type] = sign
+
+            if SignType.STOP in closest_signs and closest_signs[SignType.STOP].approx_dist < 0.4:
+                lf.authority = 0.0
+                ignore_intersection = True # Don't attempt to navigate intersections if a stop sign is detected
+            elif SignType.ROAD_WORK in closest_signs and closest_signs[SignType.ROAD_WORK].approx_dist < 0.75:
+                lf.authority = 0.5
+            elif SignType.YIELD in closest_signs and closest_signs[SignType.YIELD].approx_dist < 0.75:
+                self.yielding = True  # Set yielding flag to True
+
+        # If yielding is active, we need to slow down until we reach the intersection
+        if self.yielding:
+            lf.authority = 0.5
+
+        # If ignoring intersections, just follow the line. Otherwise, use the intersection navigator.
+        if ignore_intersection:
+            thr, yaw = lf.follow_line(frame, drawing_frame=drawing_frame)
+        else:
+            thr, yaw = self.inav.navigate(frame, drawing_frame=drawing_frame)
         return thr, yaw
 
 # SHARED VISION PIPELINE

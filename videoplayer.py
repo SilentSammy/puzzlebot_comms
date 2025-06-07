@@ -116,7 +116,7 @@ if __name__ == "__main__":
 
     line_foll = vn.LineFollower()
     sl_det = vn.StoplightDetector()
-    fl_det = vn.FlagDetector()
+    fl_det = vn.FlagDetector(pattern_size=(6, 2))
     in_det = vn.IntersectionDetector()
     sl_nav = vn.StoplightNavigator(
         line_follower=line_foll, 
@@ -164,15 +164,15 @@ if __name__ == "__main__":
 
     signs_pipeline = [
         ("get_signs", lambda: sg_det.get_signs(frame, drawing_frame)),
-        ("get_best_sign", lambda: sg_det.get_best_sign(frame, drawing_frame)),
-        ("get_best_sign_nb", lambda: print(sg_det.get_best_sign_nb(frame, drawing_frame))),
+        ("set_sign_distances", lambda: sg_det.set_sign_distances(frame, drawing_frame)),
+        ("get_confirmed_signs_nb", lambda: sg_det.get_confirmed_signs(frame, drawing_frame)),
     ]
     
-    vp = VideoPlayer(r"resources\videos\signs_on_track.mp4")  # Path to the video file
+    vp = VideoPlayer(r"http://127.0.0.1:5001/car_cam")  # Path to the video file
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
-    layers = signs_pipeline
+    layers = chessboard
     layer = 1
     
     while True:

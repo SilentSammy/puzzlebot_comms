@@ -25,7 +25,7 @@ sl_nav = vn.StoplightNavigator(
 int_nav = vn.IntersectionNavigator(
     line_follower=line_foll,
     intersection_detector=in_det,
-    decision_func=lambda frame: 1,
+    decision_func=lambda _: 1,
 )
 ol_con = vn.OpenLoopController(
     linear_factor=1.0,
@@ -35,6 +35,7 @@ sg_det = vn.SignDetector(get_signs)
 track_nav = vn.TrackNavigator(
     intersection_navigator=int_nav,
     sign_detector=sg_det,
+    flag_detector=fl_det,
 )
 
 # Maximum values for throttle and yaw
@@ -150,11 +151,11 @@ def record(frame):
 
 modes = [
     (('1', 'X'), "Manual Control", lambda: None),
-    (('2', 'A'), "Follow Line with Signs", lambda: sl_nav.navigate(frame, drawing_frame)),
+    (('2', 'A'), "Follow Line with Stoplight", lambda: sl_nav.navigate(frame, drawing_frame)),
     (('3'), "Follow Line", lambda: line_foll.follow_line(frame, drawing_frame)),
     (('4'), "Follow Line with Intersection", lambda: int_nav.navigate(frame, drawing_frame)),
     (('5'), "Stop at intersection", lambda: in_det.stop_at_intersection(frame, drawing_frame)),
-    (('6'), "SignDetector", lambda: sg_det.get_best_sign_nb(frame, drawing_frame)),
+    (('6'), "SignDetector", lambda: sg_det.get_confirmed_signs_nb(frame, drawing_frame)),
     (('7'), "Track Navigator", lambda: track_nav.navigate(frame, drawing_frame)),
 ]
 
@@ -188,17 +189,16 @@ try:
             ):
                 throttle, yaw = result
         
-        # Always allow manual control
-        thr, yw = manual_control()
-        throttle += thr
-        yaw += yw
-
         # Disable output for debugging
         if rising_edge('0'):
             print("Output" + (" disabled" if is_toggled('0') else " enabled"))
         if is_toggled('0'):
-            throttle = 0
-            yaw = 0
+            throttle = yaw = 0
+
+        # Always allow manual control
+        thr, yw = manual_control()
+        throttle += thr
+        yaw += yw
 
         # Send control commands to the robot
         puzzlebot.send_vel(throttle, yaw, wait_for_completion=False)

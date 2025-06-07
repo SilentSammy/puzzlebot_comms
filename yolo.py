@@ -100,17 +100,17 @@ def get_signs(frame, drawing_frame=None):
     traffic_signs = [(box, _cls_to_sign_map[cid], conf, cname) for box, cid, conf, cname in traffic_signs]
 
     # Unzip
-    boxes, sign_ids, confidences, class_names = zip(*traffic_signs) if traffic_signs else ([], [], [], [])
+    boxes, sign_types, confidences, class_names = zip(*traffic_signs) if traffic_signs else ([], [], [], [])
     boxes = np.array(boxes, dtype=int)
-    sign_ids = np.array(sign_ids, dtype=int)
+    sign_types = np.array(sign_types, dtype=int)
     confidences = np.array(confidences, dtype=float)
     class_names = list(class_names)  # Convert to list for consistency
 
     # Draw the traffic signs on the drawing_frame if provided
     if drawing_frame is not None:
-        draw_detections(boxes, sign_ids, confidences, class_names, drawing_frame)
+        draw_detections(boxes, sign_types, confidences, class_names, drawing_frame)
     
-    return boxes, sign_ids, confidences, class_names
+    return boxes, sign_types, confidences, class_names
 
 # Globals
 MODEL_PATH = "best.pt"
