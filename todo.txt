@@ -54,6 +54,7 @@ pull: scp -r puzzlebot@192.168.43.125:/home/puzzlebot/ros2_ws/src/cam_navigation
 + slow down when roadwork sign is at 50cm or less
 + display authority on frame as percentage if not 1.0
 + slow down permanently until decision func is polled when seeing yield sign
-- add single_actions and ongoing_actions to run when seeing a certain signs
-- integrate stoplight detection, in a way that can be easily disabled
+-- add single_actions and ongoing_actions to run when seeing a certain signs
 -- evaluate possibilty of doing a little wiggle dance at the end (maybe provide an single_endaction and an ongoing_endaction. Start a sequence in the single and return the output in ongoing)
++ integrate stoplight detection, in a way that can be easily disabled
+- StoplightDetectorV2

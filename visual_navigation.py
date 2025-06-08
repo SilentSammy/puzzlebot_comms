@@ -29,14 +29,14 @@ class Sign:
 
 class SignDetector:
     def __init__(self,
-        get_signs_func,
+        get_signs_func=None, # If None, this class will do nothing. Useful for testing.
         history_len=4,
         chain_length=8,
         max_chain_gap=2,
         ref_height=50, # how high the sign is in pixels when at a distance of 1 meter
     ):
         # _get_signs_func(frame, drawing_frame) -> boxes, sign_types, confidences, class_names
-        self._get_signs_func = get_signs_func
+        self._get_signs_func = get_signs_func or (lambda frame, drawing_frame=None: ([], [], [], []))
 
         self.ref_height = ref_height  # Reference height of the sign in pixels at 1 meter distance
 
@@ -611,9 +611,6 @@ class StoplightDetector:
         # Process the frame
         mask, red_ellipses, yellow_ellipses, green_ellipses = self.stoplight_mask(frame)
         if drawing_frame is not None:
-            grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            grayscale = cv2.cvtColor(grayscale, cv2.COLOR_GRAY2BGR)
-            drawing_frame[:] = grayscale
             for ellipse in red_ellipses:
                 cv2.ellipse(drawing_frame, ellipse, (0, 0, 255), -1)
             for ellipse in yellow_ellipses:
@@ -746,6 +743,256 @@ class StoplightNavigator:
         else:
             self.fd.flag_reached(frame, drawing_frame=drawing_frame, non_blocking=True)
         return thr, yaw
+
+class StoplightDetectorV2:
+    def __init__(
+        self,
+        low_threshold=50,
+        high_threshold=150,
+        v_fov=0.5,
+        min_contour_points=5,
+        min_area_ratio=0.9,
+        max_area_ratio=1.1,
+        min_major_axis=20,
+        max_major_axis=None,
+        draw_color=(0, 255, 0),
+        color_std_thres=45,
+        hsv_hue_range=(0, 179),         # Default: allow all hues
+        hsv_sat_range=(0, 255),         # Default: allow all saturations
+        hsv_val_range=(180, 255),       # Default: only values above 180
+        
+        yellow_hue = 30,  # typical yellow hue in OpenCV
+        low_sat_hue_shift = 270,  # how much to shift hue toward yellow at zero saturation
+        sat_threshold = 50,      # below this, start shifting
+        
+        chain_length=4,
+        max_chain_gap=1,
+        history_len=5,
+    ):
+        # ...existing assignments...
+        self.low_threshold = low_threshold
+        self.high_threshold = high_threshold
+        self.v_fov = v_fov
+        self.min_contour_points = min_contour_points
+        self.min_area_ratio = min_area_ratio
+        self.max_area_ratio = max_area_ratio
+        self.min_major_axis = min_major_axis
+        self.max_major_axis = max_major_axis
+        self.draw_color = draw_color
+        self.color_std_thres = color_std_thres
+
+        # HSV filtering parameters
+        self.hsv_hue_range = hsv_hue_range
+        self.hsv_sat_range = hsv_sat_range
+        self.hsv_val_range = hsv_val_range
+        
+        # Yellow hue and saturation shift parameters
+        self.yellow_hue = yellow_hue  # typical yellow hue in OpenCV
+        self.low_sat_hue_shift = low_sat_hue_shift  # how much to shift hue toward yellow at zero saturation
+        self.sat_threshold = sat_threshold      # below this, start shifting
+
+        # Temporal noise suppression parameters
+        self.chain_length = chain_length
+        self.max_chain_gap = max_chain_gap
+        color_history_len = max(history_len, chain_length + max_chain_gap)
+        self.red_history = deque(maxlen=color_history_len)
+        self.yellow_history = deque(maxlen=color_history_len)
+        self.green_history = deque(maxlen=color_history_len)
+    
+    def canny_edges(self, frame, drawing_frame=None):
+        h = int(frame.shape[0] * self.v_fov)
+        frame_proc = frame[:h, :]
+        edges = cv2.Canny(frame_proc, self.low_threshold, self.high_threshold)
+        full_edges = np.zeros(frame.shape[:2], dtype=edges.dtype)
+        full_edges[:h, :] = edges
+        if drawing_frame is not None:
+            drawing_frame[:] = cv2.cvtColor(full_edges, cv2.COLOR_GRAY2BGR)
+        return full_edges
+
+    def detect_elliptical_edges(self, frame, drawing_frame=None):
+        edges = self.canny_edges(frame)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        ellipses = []
+        for cnt in contours:
+            if len(cnt) >= self.min_contour_points:
+                ellipse = cv2.fitEllipse(cnt)
+                (center, axes, angle) = ellipse
+                major_axis, minor_axis = axes
+                if major_axis < self.min_major_axis:
+                    continue
+                if self.max_major_axis is not None and major_axis > self.max_major_axis:
+                    continue
+                contour_area = cv2.contourArea(cnt)
+                ellipse_area = np.pi * (major_axis / 2) * (minor_axis / 2)
+                if ellipse_area == 0:
+                    continue
+                area_ratio = contour_area / ellipse_area
+                if not (self.min_area_ratio < area_ratio < self.max_area_ratio):
+                    continue
+                ellipses.append(ellipse)
+                if drawing_frame is not None:
+                    cv2.ellipse(drawing_frame, ellipse, self.draw_color, 2)
+        return ellipses
+
+    def filter_solid_color_ellipses(self, frame, drawing_frame=None):
+        """
+        Pipeline stage: Detects ellipses and filters to only those that are a solid color inside.
+        Args:
+            frame: The original image.
+            drawing_frame: Optional image to draw results on.
+        Returns:
+            solid_ellipses: List of ellipses passing the solid color test.
+        """
+        ellipses = self.detect_elliptical_edges(frame)
+        solid_ellipses = []
+        for ellipse in ellipses:
+            mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+            cv2.ellipse(mask, ellipse, 255, thickness=-1)
+            pixels = frame[mask == 255]
+            if pixels.size == 0:
+                continue
+            pixels = pixels.reshape(-1, 3).astype(np.float32)
+            color_std = np.std(pixels, axis=0)
+            if np.max(color_std) <= self.color_std_thres:
+                solid_ellipses.append(ellipse)
+                if drawing_frame is not None:
+                    cv2.ellipse(drawing_frame, ellipse, (0, 255, 0), 2)  # Draw accepted ellipses in green
+        return solid_ellipses
+
+    def filter_hsv_ellipses(self, frame, drawing_frame=None):
+        """
+        Pipeline stage: Filters ellipses to only those whose average color (in HSV) is within the configured range.
+        Args:
+            frame: The original image (BGR).
+            drawing_frame: Optional image to draw results on.
+        Returns:
+            hsv_ellipses: List of ellipses passing the HSV filter.
+        """
+        # Get ellipses from the previous stage
+        ellipses = self.filter_solid_color_ellipses(frame)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hsv_ellipses = []
+        for ellipse in ellipses:
+            mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+            cv2.ellipse(mask, ellipse, 255, thickness=-1)
+            pixels = hsv[mask == 255]
+            if pixels.size == 0:
+                continue
+            avg_h, avg_s, avg_v = np.mean(pixels, axis=0)
+            if (
+                self.hsv_hue_range[0] <= avg_h <= self.hsv_hue_range[1] and
+                self.hsv_sat_range[0] <= avg_s <= self.hsv_sat_range[1] and
+                self.hsv_val_range[0] <= avg_v <= self.hsv_val_range[1]
+            ):
+                hsv_ellipses.append(ellipse)
+                if drawing_frame is not None:
+                    cv2.ellipse(drawing_frame, ellipse, (0, 255, 0), 2)  # Draw accepted ellipses in green
+        return hsv_ellipses
+    
+    def classify_stoplight_ellipses(self, frame, drawing_frame=None):
+        """
+        Final pipeline stage: Classifies filtered ellipses as red, yellow, or green based on average hue.
+        Returns:
+            (red_ellipses, yellow_ellipses, green_ellipses): tuple of lists of ellipses.
+        """
+        ellipses = self.filter_hsv_ellipses(frame)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        red_ellipses, yellow_ellipses, green_ellipses = [], [], []
+
+        # Define target hues (wrap-around for red)
+        target_hues = {
+            'red': getattr(self, 'red_target_hue', 0),
+            'yellow': getattr(self, 'yellow_hue', 30),
+            'green': getattr(self, 'green_hue', 65)
+        }
+        # BGR colors for filling
+        fill_colors = {
+            'red': (0, 0, 255),
+            'yellow': (0, 255, 255),
+            'green': (0, 255, 0)
+        }
+
+        for ellipse in ellipses:
+            mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+            cv2.ellipse(mask, ellipse, 255, thickness=-1)
+            pixels = hsv[mask == 255]
+            if pixels.size == 0:
+                continue
+            avg_h, avg_s, avg_v = np.mean(pixels, axis=0)
+            orig_hue = avg_h
+
+            # Artificially lower the hue as saturation decreases
+            if avg_s < self.sat_threshold:
+                alpha = 1 - (avg_s / self.sat_threshold)
+                avg_h = (1 - alpha) * avg_h + alpha * self.yellow_hue
+
+            # Compute circular hue distance
+            def hue_dist(h1, h2):
+                d = abs(h1 - h2)
+                return min(d, 180 - d)
+
+            target_hues = {
+                'red': getattr(self, 'red_target_hue', 0),
+                'yellow': getattr(self, 'yellow_hue', 30),
+                'green': getattr(self, 'green_hue', 65)
+            }
+            distances = {color: hue_dist(avg_h, hue) for color, hue in target_hues.items()}
+            closest_color = min(distances, key=distances.get)
+
+            print(f"Ellipse avg HSV: ({orig_hue:.1f}->{avg_h:.1f}, {avg_s:.1f}, {avg_v:.1f}) classified as {closest_color}")
+
+            if drawing_frame is not None:
+                fill_colors = {'red': (0, 0, 255), 'yellow': (0, 255, 255), 'green': (0, 255, 0)}
+                cv2.ellipse(drawing_frame, ellipse, fill_colors[closest_color], thickness=-1)
+
+            if closest_color == 'red':
+                red_ellipses.append(ellipse)
+            elif closest_color == 'yellow':
+                yellow_ellipses.append(ellipse)
+            elif closest_color == 'green':
+                green_ellipses.append(ellipse)
+
+        return red_ellipses, yellow_ellipses, green_ellipses
+
+    def temporal_confirm_stoplight(self, frame, drawing_frame=None):
+        """
+        Pipeline stage: Applies temporal filtering to suppress noise and confirm the stoplight color.
+        Draws an orange border around unconfirmed ellipses and a green border around the confirmed ellipse.
+        Returns:
+            confirmed_color: 0=red, 1=yellow, 2=green, or None if not confirmed.
+        """
+        red_ellipses, yellow_ellipses, green_ellipses = self.classify_stoplight_ellipses(frame, drawing_frame=drawing_frame)
+        # Update color histories with booleans
+        self.red_history.append(bool(red_ellipses))
+        self.yellow_history.append(bool(yellow_ellipses))
+        self.green_history.append(bool(green_ellipses))
+
+        def is_confirmed(history):
+            return sum(history) >= (self.chain_length - self.max_chain_gap)
+
+        confirmed = []
+        ellipses_by_color = [red_ellipses, yellow_ellipses, green_ellipses]
+        for color, history in enumerate([self.red_history, self.yellow_history, self.green_history]):
+            if is_confirmed(history):
+                count = sum(history)
+                confirmed.append((color, count))
+        # Draw borders for all ellipses
+        if drawing_frame is not None:
+            # Draw orange borders for all unconfirmed ellipses
+            for ellipses, history in zip(ellipses_by_color, [self.red_history, self.yellow_history, self.green_history]):
+                if not is_confirmed(history):
+                    for ellipse in ellipses:
+                        cv2.ellipse(drawing_frame, ellipse, (0, 128, 255), 2)  # Orange border
+        # Draw green border for the confirmed ellipse
+        if confirmed:
+            confirmed.sort(key=lambda x: x[1], reverse=True)
+            chosen_color = confirmed[0][0]
+            ellipses = ellipses_by_color[chosen_color]
+            if ellipses and drawing_frame is not None:
+                largest = max(ellipses, key=lambda e: max(e[1]))
+                cv2.ellipse(drawing_frame, largest, (255, 255, 255), 2)  # Green border
+            return chosen_color
+        return None
 
 class IntersectionDetector:
     def __init__(self,
@@ -909,7 +1156,7 @@ class IntersectionNavigator:
     ):
         self.lf = line_follower or LineFollower()
         self.id = intersection_detector or IntersectionDetector()
-        self.controller = ol_controller or OpenLoopController()
+        self.controller:OpenLoopController = ol_controller or OpenLoopController()
 
         # Parameters
         self.decision_func = decision_func      # Function to decide the next action
@@ -925,11 +1172,12 @@ class IntersectionNavigator:
             (0, math.radians(90), 5.0),
             (0.15, 0, 2.0),
         ]
-        turn_right = turn_right or [
-            (0.35, 0, 2.0),
-            (0, -math.radians(90), 5.0),
-            (0.15, 0, 2.0),
-        ]
+        if turn_right is not None:
+            turn_right = turn_right
+        else:
+            # Use turn_left with the second element (theta) negated
+            turn_right = [ (x, -theta, t) if len(step) == 3 else (x, -theta) for step in turn_left for x, theta, *rest in [step] for t in (rest[0] if rest else None,) ]
+
         forward = forward or [ (0.5, 0) ]
         self.actions = [backward, turn_left, turn_right, forward] # 0 = backward, 1 = left, 2 = right, 3 = forward
     
@@ -1049,15 +1297,17 @@ class OpenLoopController:
 
 class TrackNavigator:
     def __init__(self,
-        sign_detector: SignDetector,
+        sign_detector: SignDetector=None,
         intersection_navigator=None,
         flag_detector=None,
         end_action=None,
+        stoplight_detector=None,
     ):
         # Navigation components
-        self.inav = intersection_navigator or IntersectionNavigator()
+        self.inav:IntersectionNavigator = intersection_navigator or IntersectionNavigator()
         self.sd = sign_detector
         self.fd = flag_detector or FlagDetector()
+        self.stl_det = stoplight_detector
 
         # User settings
         self.end_action = end_action
@@ -1066,12 +1316,22 @@ class TrackNavigator:
         self.last_signs:list[Sign] = None  # Last detected sign
         self.setup(self.inav)
         self.yielding = False  # Flag to indicate if a yield sign was detected
+        self.poll = True
     
     def setup(self, inav):
+        orig_decision_func = inav.decision_func  # Save the original decision function
         def decision_func(frame):
+            # Only poll if polling is enabled
+            if not self.poll:
+                return -1
+
             # Once this is polled we can disable the yielding flag, because we've reached the intersection
             self.yielding = False
 
+            if self.sd is None:
+                return orig_decision_func(frame)  # If no sign detector, use the original decision function
+            
+            # If the sign detector is available, use it to get the last detected signs
             # return the first sign id that is within 0-3, or return -1
             sign_types = [s.type.value for s in self.last_signs] if self.last_signs else []
             for sign_type in sign_types:
@@ -1100,29 +1360,45 @@ class TrackNavigator:
         # Reset the authority of the line follower
         lf:LineFollower = self.inav.lf # Get the line follower from the intersection navigator
         lf.authority = 1.0
+        self.poll = True  # Enable polling by default
+        
+        # If we are not crossing an intersection
+        if not self.inav.controller.running():
+            
+            # Detect stoplights
+            stoplight = self.stl_det.identify_stoplight(frame, drawing_frame=drawing_frame) if self.stl_det else None
                 
-        # Detect signs in the frame
-        self.last_signs = self.sd.get_confirmed_signs_nb(frame, drawing_frame=drawing_frame)
+            # Detect signs in the frame
+            self.last_signs = self.sd.get_confirmed_signs_nb(frame, drawing_frame=drawing_frame) if self.sd else []
 
-        # Get the closest sign, if any signs are detected
-        if self.last_signs:
-            # Get the closest sign of each sign type
-            closest_signs = {}
-            for sign in self.last_signs:
-                if sign.type not in closest_signs or sign.approx_dist < closest_signs[sign.type].approx_dist:
-                    closest_signs[sign.type] = sign
+            # Control speed based on stoplight state
+            if stoplight is not None:
+                if stoplight == 0: # If red, stop
+                    self.inav.lf.authority = 0.0
+                    ignore_intersection = True
+                elif stoplight == 1: # If yellow, slow down
+                    self.inav.lf.authority = 0.5
+                    self.poll = False  # Disable polling to avoid crossing the intersection
+            
+            # Control speed based on signs
+            if self.last_signs:
+                # Get the closest sign of each sign type
+                closest_signs = {}
+                for sign in self.last_signs:
+                    if sign.type not in closest_signs or sign.approx_dist < closest_signs[sign.type].approx_dist:
+                        closest_signs[sign.type] = sign
 
-            if SignType.STOP in closest_signs and closest_signs[SignType.STOP].approx_dist < 0.4:
-                lf.authority = 0.0
-                ignore_intersection = True # Don't attempt to navigate intersections if a stop sign is detected
-            elif SignType.ROAD_WORK in closest_signs and closest_signs[SignType.ROAD_WORK].approx_dist < 0.75:
+                if SignType.STOP in closest_signs and closest_signs[SignType.STOP].approx_dist < 0.4:
+                    lf.authority = 0.0
+                    ignore_intersection = True # Don't attempt to navigate intersections if a stop sign is detected
+                elif SignType.ROAD_WORK in closest_signs and closest_signs[SignType.ROAD_WORK].approx_dist < 0.75:
+                    lf.authority = 0.5
+                elif SignType.YIELD in closest_signs and closest_signs[SignType.YIELD].approx_dist < 0.75:
+                    self.yielding = True  # Set yielding flag to True
+
+            # If yielding is active, we need to slow down until we reach the intersection
+            if self.yielding:
                 lf.authority = 0.5
-            elif SignType.YIELD in closest_signs and closest_signs[SignType.YIELD].approx_dist < 0.75:
-                self.yielding = True  # Set yielding flag to True
-
-        # If yielding is active, we need to slow down until we reach the intersection
-        if self.yielding:
-            lf.authority = 0.5
 
         # If ignoring intersections, just follow the line. Otherwise, use the intersection navigator.
         if ignore_intersection:

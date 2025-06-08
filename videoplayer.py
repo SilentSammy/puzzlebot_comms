@@ -1,6 +1,7 @@
 import os
 import cv2
 import time
+import numpy as np
 
 class VideoPlayer:
     def __init__(self, frame_source):
@@ -108,7 +109,6 @@ class VideoPlayer:
             
             self._get_frame = get_frame
 
-
 if __name__ == "__main__":
     import visual_navigation as vn
     from input_manager import keybrd
@@ -116,6 +116,7 @@ if __name__ == "__main__":
 
     line_foll = vn.LineFollower()
     sl_det = vn.StoplightDetector()
+    sl_det2 = vn.StoplightDetectorV2()
     fl_det = vn.FlagDetector(pattern_size=(6, 3), square_size=0.05)
     in_det = vn.IntersectionDetector()
     sl_nav = vn.StoplightNavigator(
@@ -144,6 +145,15 @@ if __name__ == "__main__":
         ("identify_stoplight", lambda: print(sl_det.identify_stoplight( frame, drawing_frame=drawing_frame ))),
     ]
 
+    stoplight_pipeline_v2 = [
+        ("canny_edges", lambda: sl_det2.canny_edges(frame, drawing_frame=drawing_frame)),
+        ("ellipses", lambda: sl_det2.detect_elliptical_edges(frame, drawing_frame=drawing_frame)),
+        ("solid_ellipses", lambda: sl_det2.filter_solid_color_ellipses(frame, drawing_frame=drawing_frame)),
+        ("filtered_ellipses", lambda: sl_det2.filter_hsv_ellipses(frame, drawing_frame=drawing_frame)),
+        ("classify_ellipses", lambda: sl_det2.classify_stoplight_ellipses(frame, drawing_frame=drawing_frame)),
+        ("confirm_stoplight", lambda: sl_det2.temporal_confirm_stoplight(frame, drawing_frame=drawing_frame)),
+    ]
+
     chessboard = [
         ("get_flag_distance", lambda: print(fl_det.get_flag_distance(frame, drawing_frame=drawing_frame))),
         ("get_flag_distance_nb", lambda: print(fl_det.get_flag_distance_nb(frame, drawing_frame=drawing_frame))),
@@ -168,11 +178,11 @@ if __name__ == "__main__":
         ("get_confirmed_signs_nb", lambda: sg_det.get_confirmed_signs(frame, drawing_frame)),
     ]
     
-    vp = VideoPlayer(r"resources\videos\track2.mp4")  # Path to the video file
+    vp = VideoPlayer(r"resources\videos\stoplight_ceron.mp4")  # Path to the video file
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
-    layers = line_detection_pipeline
+    layers = stoplight_pipeline_v2
     layer = 1
     
     while True:

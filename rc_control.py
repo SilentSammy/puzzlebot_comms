@@ -6,17 +6,25 @@ from input_manager.input_man import is_pressed, is_toggled, rising_edge, get_axi
 from pb_http_client import PuzzlebotHttpClient  # your custom client for sending commands
 import visual_navigation as vn
 import yolo
-import backg_poller
+from collections import deque
+
+turns = deque([3, 1, 2])
 
 # Connection
-puzzlebot = PuzzlebotHttpClient("http://192.168.137.165:5000", safe_mode=True, id = 0)
-# puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=False, id = 1)
+# puzzlebot = PuzzlebotHttpClient("http://192.168.137.165:5000", safe_mode=True, id = 0)
+puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=False, id = 1)
 
 # Navigation components
 line_foll = vn.LineFollower()
-sl_det = vn.StoplightDetector()
+sl_det = vn.StoplightDetector(
+    hsv_val_range=(128, 255)
+)
 fl_det = vn.FlagDetector(pattern_size=(6, 3), square_size=0.05)
-in_det = vn.IntersectionDetector(undistort=puzzlebot.id == 0, setpoint=0.675)
+in_det = vn.IntersectionDetector(
+    undistort=puzzlebot.id == 0,
+    setpoint=0.675,
+    max_thr=0.1
+)
 sl_nav = vn.StoplightNavigator(
     line_follower=line_foll, 
     stoplight_detector=sl_det, 
@@ -26,29 +34,25 @@ sl_nav = vn.StoplightNavigator(
 int_nav = vn.IntersectionNavigator(
     line_follower=line_foll,
     intersection_detector=in_det,
-    decision_func=lambda f: 1,
-    backward = [ (0, math.radians(180)) ],
+    decision_func=lambda _: turns.popleft() if turns else -1, # Use deque to cycle through turns
     turn_left = [
-        (0.4, 0, 2.0),
+        (0.35, 0, 2.0),
         (0, math.radians(90), 5.0),
-        (0.15, 0, 2.0),
+        (0.35, 0, 2.0),
     ],
-    turn_right = [
-        (0.4, 0, 2.0),
-        (0, -math.radians(90), 5.0),
-        (0.15, 0, 2.0),
-    ],
-    forward = [ (0.5, 0) ],
 )
 ol_con = vn.OpenLoopController(
     linear_factor=1.2 if puzzlebot.id == 0 else 1.0,  # Adjust linear factor based on robot ID
     angular_factor=1.1 if puzzlebot.id == 0 else 1.0,  # Adjust angular factor based on robot ID
 )
-sg_det = vn.SignDetector(yolo.get_signs)
+sg_det = vn.SignDetector(
+    get_signs_func=yolo.get_signs,  # Uncomment this line to use YOLO for sign detection
+)
 track_nav = vn.TrackNavigator(
     intersection_navigator=int_nav,
-    sign_detector=sg_det,
+    # sign_detector=sg_det,
     flag_detector=fl_det,
+    stoplight_detector=sl_det,
 )
 
 # Maximum values for throttle and yaw
@@ -195,11 +199,7 @@ try:
         func = modes[mode][2]
         if func:
             result = func()
-            if (
-            isinstance(result, tuple)
-            and len(result) == 2
-            and all(isinstance(x, float) for x in result)
-            ):
+            if ( isinstance(result, tuple) and len(result) == 2 and all(isinstance(x, float) for x in result) ):
                 throttle, yaw = result
         
         # Disable output for debugging
