@@ -16,7 +16,7 @@ annotated_recorder = VideoRecorder()
 
 # Connection
 puzzlebot = pb_http_client.PuzzlebotHttpClient("http://192.168.137.165:5000", safe_mode=True, id = 0)
-# puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=False, id = 1)
+# puzzlebot = pb_http_client.PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=False, id = 1)
 
 def end_sequence():
     contr = vn.OpenLoopController()
@@ -79,7 +79,8 @@ turns = deque([3, 1, 2])
 # Navigation components
 line_foll = vn.LineFollower()
 sl_det = vn.StoplightDetector(
-    hsv_val_range=(128, 255)
+    hsv_val_range=(128, 225),
+    chain_length=6,
 )
 fl_det = vn.FlagDetector(pattern_size=(4, 3), square_size=0.025)
 in_det = vn.IntersectionDetector(
@@ -110,6 +111,7 @@ ol_con = vn.OpenLoopController(
 )
 sg_det = vn.SignDetector(
     get_signs_func=lambda f: yolo.get_signs(f),  # Uncomment this line to use YOLO for sign detection
+    signs_action=lambda s: signs_action(s),  # Optional action for detected signs
 )
 track_nav = vn.TrackNavigator(
     intersection_navigator=int_nav,
@@ -118,7 +120,6 @@ track_nav = vn.TrackNavigator(
     stoplight_detector=sl_det,
     end_action=lambda: end_seq[0](),  # Optional end action
     ongoing_end_action=lambda: end_seq[1](),  # Optional ongoing end action
-    signs_action=lambda s: signs_action(s),  # Optional action for detected signs
 )
 
 # Maximum values for throttle and yaw

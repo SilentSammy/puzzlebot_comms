@@ -59,5 +59,9 @@ pull: scp -r puzzlebot@192.168.43.125:/home/puzzlebot/ros2_ws/src/cam_navigation
 + integrate stoplight detection, in a way that can be easily disabled
 +- StoplightDetectorV2
 + when turning, use the sign with the largest bounding box area
-- make cam_navigation use a separate thread for getting the frame
-- instead, make buzzer available from http server so we can record the fking video today
+-- make cam_navigation use a separate thread for getting the frame
++ instead, make buzzer available from http server so we can record the fking video today
++ make showing unconfirmed optional
++ filter signs by a threshold
++- make TrackNavigator remember last TURN sign
+- record fking video and gtfo

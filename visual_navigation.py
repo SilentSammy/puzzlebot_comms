@@ -26,6 +26,7 @@ class Sign:
     box: np.ndarray
     confidence: float
     approx_dist: Optional[float] = None
+    timestamp: Optional[float] = None
 
 class SignDetector:
     def __init__(self,
@@ -34,7 +35,14 @@ class SignDetector:
         chain_length=8,
         max_chain_gap=2,
         ref_height=50, # how high the sign is in pixels when at a distance of 1 meter
+        show_unconfirmed=False,  # Whether to show unconfirmed signs in the drawing frame
+        confidence_threshold=0.5,  # Minimum confidence to consider a sign valid
+        signs_action=None,
     ):
+        self.signs_action = signs_action
+        self.show_unconfirmed = show_unconfirmed  # Whether to show unconfirmed signs in the drawing frame
+        self.confidence_threshold = confidence_threshold  # Minimum confidence to consider a sign valids
+
         # _get_signs_func(frame, drawing_frame) -> boxes, sign_types, confidences, class_names
         self._get_signs_func = get_signs_func or (lambda frame, drawing_frame=None: ([], [], [], []))
 
@@ -54,21 +62,33 @@ class SignDetector:
         result = self._get_signs_func(frame)
         boxes, sign_types, confidences, class_names = result if result is not None else ([], [], [], [])
         signs = []
+        now = time.time()
         for box, sign_type, confidence, class_name in zip(boxes, sign_types, confidences, class_names):
             if int(sign_type) in [item.value for item in SignType]:
-                signs.append(Sign(type=SignType(int(sign_type)), box=box, confidence=float(confidence)))
+                signs.append(Sign(type=SignType(int(sign_type)), box=box, confidence=float(confidence), timestamp=now))
         
         # Draw the signs on the drawing frame if provided
         if drawing_frame is not None:
             self.draw_signs(drawing_frame, signs)
         return signs
     
+    def filter_signs(self, frame, drawing_frame = None) -> list[Sign]:
+        """
+        Filters the list of signs based on the confidence threshold.
+        Returns a list of Sign dataclass instances that meet the confidence criteria.
+        """
+        signs = self.get_signs(frame)
+        filtered = [sign for sign in signs if sign.confidence >= self.confidence_threshold]
+        if drawing_frame is not None:
+            self.draw_signs(drawing_frame, filtered)
+        return filtered
+
     def set_sign_distances(self, frame, drawing_frame=None) -> list[Sign]:
         """
         Estimates the distance of each sign based on its height in pixels.
         The reference height is used to calculate the distance.
         """
-        signs = self.get_signs(frame)
+        signs = self.filter_signs(frame)
         for sign in signs:
             if sign.box is not None and len(sign.box) == 4:
                 # Calculate the height of the bounding box
@@ -107,9 +127,11 @@ class SignDetector:
         if drawing_frame is not None:
             if confirmed_signs:
                 self.draw_signs(drawing_frame, confirmed_signs, color=(0, 255, 0))   # Green
-            if unconfirmed_signs:
+            if unconfirmed_signs and self.show_unconfirmed:
                 self.draw_signs(drawing_frame, unconfirmed_signs, color=(0, 255, 255))  # Yellow
 
+        if self.signs_action is not None:
+            self.signs_action(confirmed_signs)
         return confirmed_signs
 
     def get_best_sign(self, frame, drawing_frame=None) -> 'Sign':
@@ -554,7 +576,10 @@ class StoplightDetector:
         max_eccentricity=0.88,
         brightness_thresh=120,
         min_blob_area=15,
+        show_unconfirmed=False,  # Whether to show unconfirmed blobs in the drawing frame
     ):
+        self.show_unconfirmed = show_unconfirmed  # Whether to show unconfirmed blobs in the drawing frame
+
         self.low_threshold = low_threshold
         self.high_threshold = high_threshold
         self.v_fov = v_fov
@@ -898,7 +923,7 @@ class StoplightDetector:
                 count = sum(history)
                 confirmed.append((color, count))
         # Draw borders for all ellipses
-        if drawing_frame is not None:
+        if drawing_frame is not None and self.show_unconfirmed:
             # Draw orange borders for all unconfirmed ellipses
             for ellipses, history in zip(ellipses_by_color, [self.red_history, self.yellow_history, self.green_history]):
                 if not is_confirmed(history):
@@ -1229,7 +1254,6 @@ class TrackNavigator:
         stoplight_detector=None,
         end_action=None,
         ongoing_end_action=None,
-        signs_action=None,
     ):
         # Navigation components
         self.inav:IntersectionNavigator = intersection_navigator or IntersectionNavigator()
@@ -1240,13 +1264,15 @@ class TrackNavigator:
         # User settings
         self.end_action = end_action
         self.ongoing_end_action = ongoing_end_action
-        self.signs_action = signs_action
 
         # Static variables
-        self.last_signs:list[Sign] = None  # Last detected sign
+        self.last_signs:list[Sign] = None  # Last detected signs
+        self.last_turn_sign:Sign = None  # Last detected turn signs
         self.dec_func = self.get_decision_func()
         self.yielding = False  # Flag to indicate if a yield sign was detected
         self.poll = True
+
+        self.turn_age = 5 # seconds, how long to wait before considering a turn sign too old
     
     def get_decision_func(self):
         orig_decision_func = self.inav.decision_func  # Save the original decision function
@@ -1258,21 +1284,14 @@ class TrackNavigator:
             # Once this is polled we can disable the yielding flag, because we've reached the intersection
             self.yielding = False
 
+            # If no sign detector, use the original decision function
             if self.sd is None:
-                return orig_decision_func(frame)  # If no sign detector, use the original decision function
+                return orig_decision_func(frame)
             
-            # If the sign detector is available, use it to get the last detected signs
-            # Choose the sign (id 0-3) with the largest area, or return -1 if none
-            if self.last_signs:
-                # Filter for signs with type in 0-3
-                valid_signs = [s for s in self.last_signs if 0 <= s.type.value <= 3 and s.box is not None and len(s.box) == 4]
-                if valid_signs:
-                    # Compute area for each sign's box
-                    def box_area(sign):
-                        x1, y1, x2, y2 = map(int, sign.box)
-                        return abs((x2 - x1) * (y2 - y1))
-                    largest_sign = max(valid_signs, key=box_area)
-                    return largest_sign.type.value
+            # If the last turn sign is set, and its age is less than self.turn_age, return its type
+            if self.last_turn_sign is not None:
+                if time.time() - self.last_turn_sign.timestamp < self.turn_age:
+                    return self.last_turn_sign.type.value
             return -1
         
         return decision_func
@@ -1308,8 +1327,11 @@ class TrackNavigator:
                 
             # Detect signs in the frame
             self.last_signs = self.sd.get_confirmed_signs_nb(frame, drawing_frame=drawing_frame) if self.sd else []
-            if self.signs_action:
-                self.signs_action(self.last_signs)
+            # If a turn sign is detected (types 0-3), set the last turn sign
+            if self.last_signs:
+                turn_signs = [s for s in self.last_signs if 0 <= s.type.value <= 3]
+                if turn_signs:
+                    self.last_turn_sign = max(turn_signs, key=lambda s: s.confidence) # Choose the sign with the highest confidence
 
             # Control speed based on stoplight state
             if stoplight is not None:
