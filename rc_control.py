@@ -203,6 +203,10 @@ try:
         if frame is None:
             continue  # Skip if no frame is received
         throttle, yaw = 0, 0
+        
+        # Optionally play the buzzer
+        if rising_edge('b'):
+            puzzlebot.play_buzzer(melodies["custom_success_chime"])
 
         # Optional screenshot or recording
         if rising_edge('p'):

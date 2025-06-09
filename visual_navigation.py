@@ -885,15 +885,15 @@ class StoplightDetector:
             # --- SPECIAL CASE: Low-sat green is yellow ---
             if green_hue_min <= avg_h <= green_hue_max and avg_s < yellow_sat_max:
                 closest_color = 'yellow'
-                print(f"[Ellipse {i}] SPECIAL CASE: low-sat green treated as yellow (hue={avg_h:.1f}, sat={avg_s:.1f})")
+                # print(f"[Ellipse {i}] SPECIAL CASE: low-sat green treated as yellow (hue={avg_h:.1f}, sat={avg_s:.1f})")
             else:
                 def hue_dist(h1, h2):
                     d = abs(h1 - h2)
                     return min(d, 180 - d)
                 distances = {color: hue_dist(avg_h, hue) for color, hue in target_hues.items()}
                 closest_color = min(distances, key=distances.get)
-                print(f"[Ellipse {i}] avg_hue: {orig_hue:.1f} -> adjusted_hue: {avg_h:.1f}, avg_sat: {avg_s:.1f}, avg_val: {avg_v:.1f}")
-                print(f"  Distances: red={distances['red']:.1f}, yellow={distances['yellow']:.1f}, green={distances['green']:.1f} -> classified as {closest_color}")
+                # print(f"[Ellipse {i}] avg_hue: {orig_hue:.1f} -> adjusted_hue: {avg_h:.1f}, avg_sat: {avg_s:.1f}, avg_val: {avg_v:.1f}")
+                # print(f"  Distances: red={distances['red']:.1f}, yellow={distances['yellow']:.1f}, green={distances['green']:.1f} -> classified as {closest_color}")
 
             if drawing_frame is not None:
                 cv2.ellipse(drawing_frame, ellipse, fill_colors[closest_color], thickness=-1)
@@ -1698,7 +1698,8 @@ def clear_lost_objects(tracked_objs, lost_objs, lost_timeout, is_lost, get_lost_
     refound_objs = [o for o in tracked_objs if o not in lost_objs and is_lost(o)]
     for obj in refound_objs:
         if get_id is not None:
-            print(f"Object {get_id(obj)} refound after being lost for {time.time() - get_lost_time(obj)} seconds")
+            # print(f"Object {get_id(obj)} refound after being lost for {time.time() - get_lost_time(obj)} seconds")
+            pass
         refind(obj)
 
     # For each lost object, set a lost_time key if it doesn't have one
@@ -1712,7 +1713,8 @@ def clear_lost_objects(tracked_objs, lost_objs, lost_timeout, is_lost, get_lost_
             if time.time() - get_lost_time(obj) > lost_timeout:
                 tracked_objs.remove(obj)
                 if get_id is not None:
-                    print(f"Object {get_id(obj)} removed after being lost for {lost_timeout} seconds")
+                    # print(f"Object {get_id(obj)} removed after being lost for {lost_timeout} seconds")
+                    pass
 
 # GLOBAL CAMERA PARAMETERS
 K = np.array([
