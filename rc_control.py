@@ -15,8 +15,8 @@ raw_recorder = VideoRecorder()
 annotated_recorder = VideoRecorder()
 
 # Connection
-puzzlebot = pb_http_client.PuzzlebotHttpClient("http://192.168.137.165:5000", safe_mode=True, id = 0)
-# puzzlebot = pb_http_client.PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=False, id = 1)
+# puzzlebot = pb_http_client.PuzzlebotHttpClient("http://192.168.137.165:5000", safe_mode=True, id = 0)
+puzzlebot = pb_http_client.PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=False, id = 1)
 
 def end_sequence():
     contr = vn.OpenLoopController()
@@ -40,27 +40,14 @@ def end_sequence():
 def signs_action(signs):
     from visual_navigation import SignType, Sign
     signs:list[Sign] = signs
-    tones = {
-        SignType.STOP: [
-            (523, 60), (0, 200), (523, 60), (0, 200), (392, 80), (0, 300)
-        ],
-        SignType.YIELD: [
-            (659, 40), (0, 120), (784, 40), (0, 120), (659, 40), (0, 120), (784, 60), (0, 200)
-        ],
-        SignType.ROAD_WORK: [
-            (349, 30), (0, 100), (392, 30), (0, 100), (440, 30), (0, 100),
-            (392, 30), (0, 100), (349, 30), (0, 100), (392, 30), (0, 100),
-            (440, 30), (0, 100), (392, 30), (0, 200)
-        ]
-    }
     if not signs:
         return
     
     # Get the closest sign
     closest_sign = min(signs, key=lambda s: s.approx_dist)
-    if closest_sign.approx_dist < 0.65 and closest_sign.type in tones:
+    if closest_sign.approx_dist < 0.65 and closest_sign.type.name in melodies:
         print(f"Detected sign: {closest_sign.type.name} at {closest_sign.approx_dist:.2f}m")
-        melody = tones[closest_sign.type]
+        melody = melodies[closest_sign.type.name]
         puzzlebot.play_buzzer(melody)
 
 def decision_action(decision):
@@ -80,7 +67,7 @@ turns = deque([3, 1, 2])
 line_foll = vn.LineFollower()
 sl_det = vn.StoplightDetector(
     hsv_val_range=(128, 225),
-    chain_length=6,
+    chain_length=3,
 )
 fl_det = vn.FlagDetector(pattern_size=(4, 3), square_size=0.025)
 in_det = vn.IntersectionDetector(

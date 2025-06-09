@@ -63,5 +63,7 @@ pull: scp -r puzzlebot@192.168.43.125:/home/puzzlebot/ros2_ws/src/cam_navigation
 + instead, make buzzer available from http server so we can record the fking video today
 + make showing unconfirmed optional
 + filter signs by a threshold
-+- make TrackNavigator remember last TURN sign
++ make TrackNavigator remember last TURN sign
 - record fking video and gtfo
++ only consider stoplight at the intersection (but read constantly)
++ if last_signs is available, use largest sign, otherwise use last_turn

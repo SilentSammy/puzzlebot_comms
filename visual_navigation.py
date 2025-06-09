@@ -846,6 +846,7 @@ class StoplightDetector:
                 if drawing_frame is not None:
                     cv2.ellipse(drawing_frame, ellipse, (0, 255, 0), 2)
         return hsv_ellipses
+    
     def classify_stoplight_ellipses(self, frame, drawing_frame=None):
         ellipses = self.filter_hsv_ellipses(frame)
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -1260,6 +1261,7 @@ class TrackNavigator:
         stoplight_detector=None,
         end_action=None,
         ongoing_end_action=None,
+        turn_age = 30
     ):
         # Navigation components
         self.inav:IntersectionNavigator = intersection_navigator or IntersectionNavigator()
@@ -1278,7 +1280,7 @@ class TrackNavigator:
         self.yielding = False  # Flag to indicate if a yield sign was detected
         self.poll = True
 
-        self.turn_age = 5 # seconds, how long to wait before considering a turn sign too old
+        self.turn_age = turn_age # seconds, how long to wait before considering a turn sign too old
     
     def get_decision_func(self):
         orig_decision_func = self.inav.decision_func  # Save the original decision function
@@ -1294,6 +1296,17 @@ class TrackNavigator:
             if self.sd is None:
                 return orig_decision_func(frame)
             
+            if self.last_signs and any(s.type.value in [0, 1, 2, 3] for s in self.last_signs):
+                # Filter for signs with type in 0-3
+                valid_signs = [s for s in self.last_signs if 0 <= s.type.value <= 3 and s.box is not None and len(s.box) == 4]
+                if valid_signs:
+                    # Compute area for each sign's box
+                    def box_area(sign):
+                        x1, y1, x2, y2 = map(int, sign.box)
+                        return abs((x2 - x1) * (y2 - y1))
+                    largest_sign = max(valid_signs, key=box_area)
+                    return largest_sign.type.value
+
             # If the last turn sign is set, and its age is less than self.turn_age, return its type
             if self.last_turn_sign is not None:
                 if time.time() - self.last_turn_sign.timestamp < self.turn_age:
@@ -1339,14 +1352,8 @@ class TrackNavigator:
                 if turn_signs:
                     self.last_turn_sign = max(turn_signs, key=lambda s: s.confidence) # Choose the sign with the highest confidence
 
-            # Control speed based on stoplight state
-            if stoplight is not None:
-                if stoplight == 0: # If red, stop
-                    self.inav.lf.authority = 0.0
-                    ignore_intersection = True
-                elif stoplight == 1: # If yellow, slow down
-                    self.inav.lf.authority = 0.5
-                    self.poll = False  # Disable polling to avoid crossing the intersection
+            # Control intersection crossing based on stoplight state
+            self.poll = not (stoplight == 0 or stoplight == 1)  # Disable polling to avoid crossing the intersection
             
             # Control speed based on signs
             if self.last_signs:
