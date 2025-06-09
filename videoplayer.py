@@ -3,9 +3,6 @@ import cv2
 import time
 import numpy as np
 
-import os
-import cv2
-import time
 
 class VideoRecorder:
     def __init__(self, dir_path="./resources/videos", fps=30):
@@ -40,17 +37,6 @@ class VideoRecorder:
 
     def is_recording(self):
         return self.vw is not None
-
-# Usage in your main loop:
-# recorder = VideoRecorder()
-# ...
-# if is_toggled('o'):
-#     if not recorder.is_recording():
-#         recorder.start(frame)
-#     recorder.write(frame)
-# else:
-#     if recorder.is_recording():
-#         recorder.stop()
 
 class VideoPlayer:
     def __init__(self, frame_source):
@@ -229,12 +215,12 @@ if __name__ == "__main__":
         ("get_confirmed_signs_nb", lambda: sg_det.get_confirmed_signs(frame, drawing_frame)),
     ]
     
-    # vp = VideoPlayer(r"resources\videos\flag_on_track.mp4")  # Path to the video file
-    vp = VideoPlayer(r"http://192.168.137.165:5000/car_cam")  # Path to the video file
+    vp = VideoPlayer(r"resources\videos\stoplight_monday.mp4")  # Path to the video file
+    # vp = VideoPlayer(r"http://192.168.137.165:5000/car_cam")  # Path to the video file
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
-    layers = chessboard
+    layers = stoplight_pipeline
     layer = 1
     
     while True:

@@ -776,7 +776,7 @@ class StoplightDetector:
         """
         Returns a combined list of ellipses from both Canny-edge and solid blob strategies.
         """
-        ellipses_canny = self.detect_elliptical_edges(frame)
+        ellipses_canny = self.filter_solid_color_ellipses(frame)
         ellipses_blob = self.find_elliptical_blobs(frame)
         all_ellipses = ellipses_canny.copy()
         # Avoid duplicates: check if center and axes are close
@@ -818,6 +818,18 @@ class StoplightDetector:
         ellipses = self.find_all_elliptical_candidates(frame)
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         hsv_ellipses = []
+
+        # Support wrap-around for hue range
+        hue_min, hue_max = self.hsv_hue_range
+        def hue_in_range(h):
+            # Normalize to [0, 179]
+            h = h % 180
+            if hue_min <= hue_max:
+                return hue_min <= h <= hue_max
+            else:
+                # Wrap-around: e.g. (150, 30) means h >= 150 or h <= 30
+                return h >= hue_min or h <= hue_max
+
         for ellipse in ellipses:
             mask = np.zeros(frame.shape[:2], dtype=np.uint8)
             cv2.ellipse(mask, ellipse, 255, thickness=-1)
@@ -826,7 +838,7 @@ class StoplightDetector:
                 continue
             avg_h, avg_s, avg_v = np.mean(pixels, axis=0)
             if (
-                self.hsv_hue_range[0] <= avg_h <= self.hsv_hue_range[1] and
+                hue_in_range(avg_h) and
                 self.hsv_sat_range[0] <= avg_s <= self.hsv_sat_range[1] and
                 self.hsv_val_range[0] <= avg_v <= self.hsv_val_range[1]
             ):
@@ -834,31 +846,28 @@ class StoplightDetector:
                 if drawing_frame is not None:
                     cv2.ellipse(drawing_frame, ellipse, (0, 255, 0), 2)
         return hsv_ellipses
-    
     def classify_stoplight_ellipses(self, frame, drawing_frame=None):
-        """
-        Final pipeline stage: Classifies filtered ellipses as red, yellow, or green based on average hue.
-        Returns:
-            (red_ellipses, yellow_ellipses, green_ellipses): tuple of lists of ellipses.
-        """
         ellipses = self.filter_hsv_ellipses(frame)
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         red_ellipses, yellow_ellipses, green_ellipses = [], [], []
 
-        # Define target hues (wrap-around for red)
+        # Hardcoded parameters for this fix
+        green_hue_min = 80    # Lower bound for green hue
+        green_hue_max = 110   # Upper bound for green hue
+        yellow_sat_max = 80   # If sat below this, treat as yellow
+
         target_hues = {
             'red': getattr(self, 'red_target_hue', 0),
             'yellow': getattr(self, 'yellow_hue', 30),
             'green': getattr(self, 'green_hue', 65)
         }
-        # BGR colors for filling
         fill_colors = {
             'red': (0, 0, 255),
             'yellow': (0, 255, 255),
             'green': (0, 255, 0)
         }
 
-        for ellipse in ellipses:
+        for i, ellipse in enumerate(ellipses):
             mask = np.zeros(frame.shape[:2], dtype=np.uint8)
             cv2.ellipse(mask, ellipse, 255, thickness=-1)
             pixels = hsv[mask == 255]
@@ -872,23 +881,20 @@ class StoplightDetector:
                 alpha = 1 - (avg_s / self.sat_threshold)
                 avg_h = (1 - alpha) * avg_h + alpha * self.yellow_hue
 
-            # Compute circular hue distance
-            def hue_dist(h1, h2):
-                d = abs(h1 - h2)
-                return min(d, 180 - d)
-
-            target_hues = {
-                'red': getattr(self, 'red_target_hue', 0),
-                'yellow': getattr(self, 'yellow_hue', 30),
-                'green': getattr(self, 'green_hue', 65)
-            }
-            distances = {color: hue_dist(avg_h, hue) for color, hue in target_hues.items()}
-            closest_color = min(distances, key=distances.get)
-
-            # print(f"Ellipse avg HSV: ({orig_hue:.1f}->{avg_h:.1f}, {avg_s:.1f}, {avg_v:.1f}) classified as {closest_color}")
+            # --- SPECIAL CASE: Low-sat green is yellow ---
+            if green_hue_min <= avg_h <= green_hue_max and avg_s < yellow_sat_max:
+                closest_color = 'yellow'
+                print(f"[Ellipse {i}] SPECIAL CASE: low-sat green treated as yellow (hue={avg_h:.1f}, sat={avg_s:.1f})")
+            else:
+                def hue_dist(h1, h2):
+                    d = abs(h1 - h2)
+                    return min(d, 180 - d)
+                distances = {color: hue_dist(avg_h, hue) for color, hue in target_hues.items()}
+                closest_color = min(distances, key=distances.get)
+                print(f"[Ellipse {i}] avg_hue: {orig_hue:.1f} -> adjusted_hue: {avg_h:.1f}, avg_sat: {avg_s:.1f}, avg_val: {avg_v:.1f}")
+                print(f"  Distances: red={distances['red']:.1f}, yellow={distances['yellow']:.1f}, green={distances['green']:.1f} -> classified as {closest_color}")
 
             if drawing_frame is not None:
-                fill_colors = {'red': (0, 0, 255), 'yellow': (0, 255, 255), 'green': (0, 255, 0)}
                 cv2.ellipse(drawing_frame, ellipse, fill_colors[closest_color], thickness=-1)
 
             if closest_color == 'red':
