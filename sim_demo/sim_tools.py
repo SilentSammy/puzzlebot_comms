@@ -1,5 +1,4 @@
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
-from pynput import keyboard
 from simple_pid import PID
 import numpy as np
 import time

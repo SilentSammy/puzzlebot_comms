@@ -3,6 +3,55 @@ import cv2
 import time
 import numpy as np
 
+import os
+import cv2
+import time
+
+class VideoRecorder:
+    def __init__(self, dir_path="./resources/videos", fps=30):
+        self.dir_path = dir_path
+        self.fps = fps
+        self.vw = None
+        self.filename = None
+
+    def start(self, frame):
+        if self.vw is not None:
+            self.stop()
+        os.makedirs(self.dir_path, exist_ok=True)
+        height, width = frame.shape[:2]
+        self.filename = os.path.join(self.dir_path, time.strftime("output_%Y-%m-%d_%H-%M-%S.mp4"))
+        fourcc = cv2.VideoWriter.fourcc(*'avc1')  # Use 'mp4v' for better compatibility
+        self.vw = cv2.VideoWriter(self.filename, fourcc, self.fps, (width, height))
+        if not self.vw.isOpened():
+            print(f"Failed to open video writer for {self.filename}")
+        else:
+            print(f"Video recording started: {self.filename}")
+
+    def write(self, frame):
+        if self.vw is not None and frame is not None:
+            self.vw.write(frame)
+
+    def stop(self):
+        if self.vw is not None:
+            self.vw.release()
+            print(f"Video recording closed: {self.filename}")
+            self.vw = None
+            self.filename = None
+
+    def is_recording(self):
+        return self.vw is not None
+
+# Usage in your main loop:
+# recorder = VideoRecorder()
+# ...
+# if is_toggled('o'):
+#     if not recorder.is_recording():
+#         recorder.start(frame)
+#     recorder.write(frame)
+# else:
+#     if recorder.is_recording():
+#         recorder.stop()
+
 class VideoPlayer:
     def __init__(self, frame_source):
         self.frame_source = frame_source
@@ -29,7 +78,7 @@ class VideoPlayer:
     def get_frame(self, idx=None):
         if idx is None:
             idx = self.frame_idx
-        return self._get_frame(idx)
+        return self._get_frame(idx) # type: ignore
 
     def step(self, step_size=1):
         self._frame_idx += step_size
@@ -112,22 +161,24 @@ class VideoPlayer:
 if __name__ == "__main__":
     import visual_navigation as vn
     from input_manager import keybrd
-    from yolo import get_signs
+    # from yolo import get_signs
 
     line_foll = vn.LineFollower()
-    sl_det = vn.StoplightDetector()
-    fl_det = vn.FlagDetector(pattern_size=(6, 3), square_size=0.05)
+    sl_det = vn.StoplightDetector(hsv_val_range=(120, 255))
+    fl_det = vn.FlagDetector(pattern_size=(4, 3), square_size=0.025)
     in_det = vn.IntersectionDetector()
     sl_nav = vn.StoplightNavigator(
         line_follower=line_foll, 
         stoplight_detector=sl_det, 
         flag_detector=fl_det
     )
-    track_nav = vn.IntersectionNavigator(
+    int_nav = vn.IntersectionNavigator(
         line_follower=line_foll,
         intersection_detector=in_det,
     )
-    sg_det = vn.SignDetector(get_signs)
+    sg_det = vn.SignDetector(
+        # get_signs_func=lambda f: get_signs(f) # Uncomment this line to use YOLO for sign detection
+    )
 
     line_detection_pipeline = [
         ("adaptive_thres", lambda: line_foll.adaptive_thres(frame, drawing_frame)),
@@ -140,13 +191,14 @@ if __name__ == "__main__":
     ]
 
     stoplight_pipeline = [
-        ("stoplight_mask", lambda: sl_det.stoplight_mask( frame, drawing_frame=drawing_frame )),
-        ("identify_stoplight", lambda: print(sl_det.identify_stoplight( frame, drawing_frame=drawing_frame ))),
-    ]
+        ("find_solid_blobs", lambda: sl_det.find_solid_blobs(frame, drawing_frame=drawing_frame)),
+        ("find_elliptical_blobs", lambda: sl_det.find_elliptical_blobs(frame, drawing_frame=drawing_frame)),
 
-    stoplight_pipeline = [
         ("canny_edges", lambda: sl_det.canny_edges(frame, drawing_frame=drawing_frame)),
         ("ellipses", lambda: sl_det.detect_elliptical_edges(frame, drawing_frame=drawing_frame)),
+
+        ("get_all_ellipses", lambda: sl_det.find_all_elliptical_candidates(frame, drawing_frame=drawing_frame)),
+
         ("solid_ellipses", lambda: sl_det.filter_solid_color_ellipses(frame, drawing_frame=drawing_frame)),
         ("filtered_ellipses", lambda: sl_det.filter_hsv_ellipses(frame, drawing_frame=drawing_frame)),
         ("classify_ellipses", lambda: sl_det.classify_stoplight_ellipses(frame, drawing_frame=drawing_frame)),
@@ -167,8 +219,8 @@ if __name__ == "__main__":
 
     algorithms = [
         ("follow_line", lambda: line_foll.follow_line(frame, drawing_frame)),
-        ("follow_line_w_signs", lambda: sl_nav.navigate(frame, drawing_frame, end_action=lambda: print("Done!"))),
-        ("navigate_track", lambda: track_nav.navigate(frame, drawing_frame))
+        ("follow_line_w_signs", lambda: sl_nav.navigate(frame, drawing_frame)),
+        ("navigate_track", lambda: int_nav.navigate(frame, drawing_frame))
     ]
 
     signs_pipeline = [
@@ -177,12 +229,12 @@ if __name__ == "__main__":
         ("get_confirmed_signs_nb", lambda: sg_det.get_confirmed_signs(frame, drawing_frame)),
     ]
     
-    # vp = VideoPlayer(r"resources\videos\stoplight_ceron.mp4")  # Path to the video file
-    vp = VideoPlayer(r"http://127.0.0.1:5001/car_cam")  # Path to the video file
+    # vp = VideoPlayer(r"resources\videos\flag_on_track.mp4")  # Path to the video file
+    vp = VideoPlayer(r"http://192.168.137.165:5000/car_cam")  # Path to the video file
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
-    layers = stoplight_pipeline
+    layers = chessboard
     layer = 1
     
     while True:
@@ -193,7 +245,7 @@ if __name__ == "__main__":
         vp.step(1 if re('w') else -1 if re('s') else 0)  # Step forward/backward
         mask = None
         frame = vp.get_frame()
-        drawing_frame = frame.copy()
+        drawing_frame = frame.copy() # type: ignore
 
         # Print the current frame
         print(f"Frame {vp.frame_idx}/{vp.frame_count} ", end='')
@@ -203,6 +255,8 @@ if __name__ == "__main__":
             if re(str(i)):
                 layer = i
                 break
+        if re('0'):
+            layer = 10
 
         # Choose the layer to show. Layer 1 is do nothing. Layer 2 is index 0 in the pipeline, etc.
         if layer >= 2 and layer <= len(layers) + 1:

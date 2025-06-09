@@ -536,23 +536,25 @@ class StoplightDetector:
         min_contour_points=5,
         min_area_ratio=0.9,
         max_area_ratio=1.1,
-        min_major_axis=20,
-        max_major_axis=None,
+        min_major_axis=10,
+        max_major_axis=200,
         draw_color=(0, 255, 0),
         color_std_thres=45,
-        hsv_hue_range=(0, 179),         # Default: allow all hues
-        hsv_sat_range=(0, 255),         # Default: allow all saturations
-        hsv_val_range=(180, 255),       # Default: only values above 180
-        
-        yellow_hue = 30,  # typical yellow hue in OpenCV
-        low_sat_hue_shift = 270,  # how much to shift hue toward yellow at zero saturation
-        sat_threshold = 50,      # below this, start shifting
-        
+        hsv_hue_range=(0, 179),
+        hsv_sat_range=(0, 255),
+        hsv_val_range=(180, 255),
+        yellow_hue=30,
+        low_sat_hue_shift=270,
+        sat_threshold=50,
         chain_length=4,
         max_chain_gap=1,
         history_len=5,
+        # Previously hardcoded parameters:
+        solidity_thres=0.92,
+        max_eccentricity=0.88,
+        brightness_thresh=120,
+        min_blob_area=15,
     ):
-        # ...existing assignments...
         self.low_threshold = low_threshold
         self.high_threshold = high_threshold
         self.v_fov = v_fov
@@ -568,11 +570,11 @@ class StoplightDetector:
         self.hsv_hue_range = hsv_hue_range
         self.hsv_sat_range = hsv_sat_range
         self.hsv_val_range = hsv_val_range
-        
+
         # Yellow hue and saturation shift parameters
-        self.yellow_hue = yellow_hue  # typical yellow hue in OpenCV
-        self.low_sat_hue_shift = low_sat_hue_shift  # how much to shift hue toward yellow at zero saturation
-        self.sat_threshold = sat_threshold      # below this, start shifting
+        self.yellow_hue = yellow_hue
+        self.low_sat_hue_shift = low_sat_hue_shift
+        self.sat_threshold = sat_threshold
 
         # Temporal noise suppression parameters
         self.chain_length = chain_length
@@ -581,7 +583,117 @@ class StoplightDetector:
         self.red_history = deque(maxlen=color_history_len)
         self.yellow_history = deque(maxlen=color_history_len)
         self.green_history = deque(maxlen=color_history_len)
+
+        # Previously hardcoded parameters, now configurable
+        self.solidity_thres = solidity_thres
+        self.max_eccentricity = max_eccentricity
+        self.brightness_thresh = brightness_thresh
+        self.min_blob_area = min_blob_area
     
+    def find_solid_blobs(self, frame, drawing_frame=None):
+        """
+        Finds solid-color blobs in the top self.v_fov portion of the image.
+        Returns: list of contours (not ellipses yet).
+        Fills each blob with a unique color from a predefined list if drawing_frame is provided.
+        """
+        h = int(frame.shape[0] * self.v_fov)
+        frame_proc = frame[:h, :]
+
+        # Use the same parameters as filter_solid_color_ellipses
+        brightness_thresh = self.brightness_thresh
+        min_blob_area = self.min_blob_area
+        color_std_thres = self.color_std_thres
+
+        unique_colors = [
+            (255, 0, 0),    # Blue
+            (0, 255, 0),    # Green
+            (0, 0, 255),    # Red
+            (0, 255, 255),  # Yellow
+            (255, 0, 255),  # Magenta
+            (255, 255, 0),  # Cyan
+            (128, 0, 128),  # Purple
+            (0, 128, 255),  # Orange
+            (128, 255, 0),  # Lime
+            (255, 128, 0),  # Orange-Red
+        ]
+
+        # 1. Convert to grayscale and threshold to get bright regions
+        gray = cv2.cvtColor(frame_proc, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray, brightness_thresh, 255, cv2.THRESH_BINARY)
+
+        # 2. Find contours
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        solid_blobs = []
+        color_idx = 0
+        for cnt in contours:
+            if cv2.contourArea(cnt) < min_blob_area:
+                continue
+            mask_blob = np.zeros(frame_proc.shape[:2], dtype=np.uint8)
+            cv2.drawContours(mask_blob, [cnt], -1, 255, -1)
+            pixels = frame_proc[mask_blob == 255]
+            if pixels.size == 0:
+                continue
+            # Use the same std logic as filter_solid_color_ellipses
+            pixels = pixels.reshape(-1, 3).astype(np.float32)
+            color_std = np.std(pixels, axis=0)
+            if np.max(color_std) <= color_std_thres:
+                cnt_full = cnt.copy()
+                cnt_full[:, 0, 1] += 0  # y offset is 0 since we use the top part
+                solid_blobs.append(cnt_full)
+                if drawing_frame is not None:
+                    color = unique_colors[color_idx % len(unique_colors)]
+                    cv2.drawContours(drawing_frame[:h, :], [cnt], -1, color, thickness=cv2.FILLED)
+                    color_idx += 1
+        return solid_blobs
+    
+    def find_elliptical_blobs(self, frame, drawing_frame=None):
+        """
+        Filters solid blobs to only those that are elliptical, have high solidity, and low eccentricity.
+        Returns: list of fitted ellipses.
+        """
+        solidity_thres = self.solidity_thres
+        max_eccentricity = self.max_eccentricity
+        solid_blobs = self.find_solid_blobs(frame)
+        ellipses = []
+        for cnt in solid_blobs:
+            if len(cnt) < self.min_contour_points:
+                continue
+            try:
+                ellipse = cv2.fitEllipse(cnt)
+            except cv2.error:
+                continue
+            (center, axes, angle) = ellipse
+            major_axis, minor_axis = max(axes), min(axes)
+            if major_axis < self.min_major_axis:
+                continue
+            if self.max_major_axis is not None and major_axis > self.max_major_axis:
+                continue
+            contour_area = cv2.contourArea(cnt)
+            ellipse_area = np.pi * (major_axis / 2) * (minor_axis / 2)
+            if ellipse_area == 0:
+                continue
+            area_ratio = contour_area / ellipse_area
+            if not (self.min_area_ratio < area_ratio < self.max_area_ratio):
+                continue
+            # Solidity filter
+            hull = cv2.convexHull(cnt)
+            hull_area = cv2.contourArea(hull)
+            if hull_area == 0:
+                continue
+            solidity = contour_area / hull_area
+            if solidity < solidity_thres:
+                continue
+            # Eccentricity filter
+            if major_axis == 0:
+                continue
+            eccentricity = np.sqrt(1 - (minor_axis / major_axis) ** 2)
+            if eccentricity > max_eccentricity:
+                continue
+            ellipses.append(ellipse)
+            if drawing_frame is not None:
+                cv2.ellipse(drawing_frame, ellipse, self.draw_color, 2)
+        return ellipses
+
     def canny_edges(self, frame, drawing_frame=None):
         h = int(frame.shape[0] * self.v_fov)
         frame_proc = frame[:h, :]
@@ -597,34 +709,69 @@ class StoplightDetector:
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         ellipses = []
         for cnt in contours:
-            if len(cnt) >= self.min_contour_points:
+            if len(cnt) < self.min_contour_points:
+                continue
+            try:
                 ellipse = cv2.fitEllipse(cnt)
-                (center, axes, angle) = ellipse
-                major_axis, minor_axis = axes
-                if major_axis < self.min_major_axis:
-                    continue
-                if self.max_major_axis is not None and major_axis > self.max_major_axis:
-                    continue
-                contour_area = cv2.contourArea(cnt)
-                ellipse_area = np.pi * (major_axis / 2) * (minor_axis / 2)
-                if ellipse_area == 0:
-                    continue
-                area_ratio = contour_area / ellipse_area
-                if not (self.min_area_ratio < area_ratio < self.max_area_ratio):
-                    continue
-                ellipses.append(ellipse)
-                if drawing_frame is not None:
-                    cv2.ellipse(drawing_frame, ellipse, self.draw_color, 2)
+            except cv2.error:
+                continue
+            (center, axes, angle) = ellipse
+            major_axis, minor_axis = max(axes), min(axes)
+            if major_axis < self.min_major_axis:
+                continue
+            if self.max_major_axis is not None and major_axis > self.max_major_axis:
+                continue
+            contour_area = cv2.contourArea(cnt)
+            ellipse_area = np.pi * (major_axis / 2) * (minor_axis / 2)
+            if ellipse_area == 0:
+                continue
+            area_ratio = contour_area / ellipse_area
+            if not (self.min_area_ratio < area_ratio < self.max_area_ratio):
+                continue
+            # Solidity filter
+            hull = cv2.convexHull(cnt)
+            hull_area = cv2.contourArea(hull)
+            if hull_area == 0:
+                continue
+            solidity = contour_area / hull_area
+            if solidity < self.solidity_thres:
+                continue
+            # Eccentricity filter
+            if major_axis == 0:
+                continue
+            eccentricity = np.sqrt(1 - (minor_axis / major_axis) ** 2)
+            if eccentricity > self.max_eccentricity:
+                continue
+            ellipses.append(ellipse)
+            if drawing_frame is not None:
+                cv2.ellipse(drawing_frame, ellipse, self.draw_color, 2)
         return ellipses
+    
+    def find_all_elliptical_candidates(self, frame, drawing_frame=None):
+        """
+        Returns a combined list of ellipses from both Canny-edge and solid blob strategies.
+        """
+        ellipses_canny = self.detect_elliptical_edges(frame)
+        ellipses_blob = self.find_elliptical_blobs(frame)
+        all_ellipses = ellipses_canny.copy()
+        # Avoid duplicates: check if center and axes are close
+        for e_blob in ellipses_blob:
+            c_blob, axes_blob, _ = e_blob
+            if not any(
+                np.linalg.norm(np.array(c_blob) - np.array(e_canny[0])) < 10 and
+                np.allclose(axes_blob, e_canny[1], atol=10)
+                for e_canny in ellipses_canny
+            ):
+                all_ellipses.append(e_blob)
+        if drawing_frame is not None:
+            for ellipse in all_ellipses:
+                cv2.ellipse(drawing_frame, ellipse, (255, 0, 255), 2)
+        return all_ellipses
 
     def filter_solid_color_ellipses(self, frame, drawing_frame=None):
         """
-        Pipeline stage: Detects ellipses and filters to only those that are a solid color inside.
-        Args:
-            frame: The original image.
-            drawing_frame: Optional image to draw results on.
-        Returns:
-            solid_ellipses: List of ellipses passing the solid color test.
+        Filters a list of ellipses to only those that are a solid color inside.
+        If ellipses is None, uses the merged candidates.
         """
         ellipses = self.detect_elliptical_edges(frame)
         solid_ellipses = []
@@ -639,20 +786,11 @@ class StoplightDetector:
             if np.max(color_std) <= self.color_std_thres:
                 solid_ellipses.append(ellipse)
                 if drawing_frame is not None:
-                    cv2.ellipse(drawing_frame, ellipse, (0, 255, 0), 2)  # Draw accepted ellipses in green
+                    cv2.ellipse(drawing_frame, ellipse, (0, 255, 0), 2)
         return solid_ellipses
 
     def filter_hsv_ellipses(self, frame, drawing_frame=None):
-        """
-        Pipeline stage: Filters ellipses to only those whose average color (in HSV) is within the configured range.
-        Args:
-            frame: The original image (BGR).
-            drawing_frame: Optional image to draw results on.
-        Returns:
-            hsv_ellipses: List of ellipses passing the HSV filter.
-        """
-        # Get ellipses from the previous stage
-        ellipses = self.filter_solid_color_ellipses(frame)
+        ellipses = self.find_all_elliptical_candidates(frame)
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         hsv_ellipses = []
         for ellipse in ellipses:
@@ -669,7 +807,7 @@ class StoplightDetector:
             ):
                 hsv_ellipses.append(ellipse)
                 if drawing_frame is not None:
-                    cv2.ellipse(drawing_frame, ellipse, (0, 255, 0), 2)  # Draw accepted ellipses in green
+                    cv2.ellipse(drawing_frame, ellipse, (0, 255, 0), 2)
         return hsv_ellipses
     
     def classify_stoplight_ellipses(self, frame, drawing_frame=None):
@@ -722,7 +860,7 @@ class StoplightDetector:
             distances = {color: hue_dist(avg_h, hue) for color, hue in target_hues.items()}
             closest_color = min(distances, key=distances.get)
 
-            print(f"Ellipse avg HSV: ({orig_hue:.1f}->{avg_h:.1f}, {avg_s:.1f}, {avg_v:.1f}) classified as {closest_color}")
+            # print(f"Ellipse avg HSV: ({orig_hue:.1f}->{avg_h:.1f}, {avg_s:.1f}, {avg_v:.1f}) classified as {closest_color}")
 
             if drawing_frame is not None:
                 fill_colors = {'red': (0, 0, 255), 'yellow': (0, 255, 255), 'green': (0, 255, 0)}
@@ -964,11 +1102,16 @@ class IntersectionNavigator:
         forward = forward or [ (0.5, 0) ]
         self.actions = [backward, turn_left, turn_right, forward] # 0 = backward, 1 = left, 2 = right, 3 = forward
     
-    def navigate(self, frame, drawing_frame=None):
-        decision_func = self.decision_func or (lambda frame: 2) # Default decision function
+    def navigate(self, frame, drawing_frame=None, decision_func=None):
+        decision_func = decision_func or self.decision_func or (lambda frame: 2) # Default decision function
         
         # If an action is in progress execute it.
         if self.controller.running():
+            if drawing_frame is not None:
+                action_labels = ["backward", "left", "right", "forward"]
+                act_idx = self.actions.index(self.controller.steps)  # Get the current action index
+                cv2.putText(drawing_frame, f"Going {action_labels[act_idx]}...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+
             thr, yaw = self.controller.execute()
             return thr, yaw
 
@@ -1083,8 +1226,10 @@ class TrackNavigator:
         sign_detector: SignDetector=None,
         intersection_navigator=None,
         flag_detector=None,
-        end_action=None,
         stoplight_detector=None,
+        end_action=None,
+        ongoing_end_action=None,
+        signs_action=None,
     ):
         # Navigation components
         self.inav:IntersectionNavigator = intersection_navigator or IntersectionNavigator()
@@ -1094,15 +1239,17 @@ class TrackNavigator:
 
         # User settings
         self.end_action = end_action
+        self.ongoing_end_action = ongoing_end_action
+        self.signs_action = signs_action
 
         # Static variables
         self.last_signs:list[Sign] = None  # Last detected sign
-        self.setup(self.inav)
+        self.dec_func = self.get_decision_func()
         self.yielding = False  # Flag to indicate if a yield sign was detected
         self.poll = True
     
-    def setup(self, inav):
-        orig_decision_func = inav.decision_func  # Save the original decision function
+    def get_decision_func(self):
+        orig_decision_func = self.inav.decision_func  # Save the original decision function
         def decision_func(frame):
             # Only poll if polling is enabled
             if not self.poll:
@@ -1115,20 +1262,34 @@ class TrackNavigator:
                 return orig_decision_func(frame)  # If no sign detector, use the original decision function
             
             # If the sign detector is available, use it to get the last detected signs
-            # return the first sign id that is within 0-3, or return -1
-            sign_types = [s.type.value for s in self.last_signs] if self.last_signs else []
-            for sign_type in sign_types:
-                if 0 <= sign_type <= 3:
-                    return sign_type
+            # Choose the sign (id 0-3) with the largest area, or return -1 if none
+            if self.last_signs:
+                # Filter for signs with type in 0-3
+                valid_signs = [s for s in self.last_signs if 0 <= s.type.value <= 3 and s.box is not None and len(s.box) == 4]
+                if valid_signs:
+                    # Compute area for each sign's box
+                    def box_area(sign):
+                        x1, y1, x2, y2 = map(int, sign.box)
+                        return abs((x2 - x1) * (y2 - y1))
+                    largest_sign = max(valid_signs, key=box_area)
+                    return largest_sign.type.value
             return -1
         
-        # Overwrite the decision function with the one that uses the sign detector
-        inav.decision_func = decision_func
+        return decision_func
 
     def navigate(self, frame, drawing_frame=None):
+        # End actions
         if self.fd.end_reached:
+            if self.ongoing_end_action:
+                ret = self.ongoing_end_action()
+                if ( isinstance(ret, tuple) and len(ret) == 2 and all(isinstance(x, float) for x in ret) ):
+                    return ret
             return 0.0, 0.0  # If the end has been reached, stop the robot
 
+        # Reset loop settings
+        lf:LineFollower = self.inav.lf
+        lf.authority = 1.0
+        self.poll = True
         ignore_intersection = False
 
         # Detect flags in the frame
@@ -1140,19 +1301,15 @@ class TrackNavigator:
                 self.end_action()
             return 0.0, 0.0  # Stop the robot if the flag is reached
         
-        # Reset the authority of the line follower
-        lf:LineFollower = self.inav.lf # Get the line follower from the intersection navigator
-        lf.authority = 1.0
-        self.poll = True  # Enable polling by default
-        
         # If we are not crossing an intersection
         if not self.inav.controller.running():
-            
             # Detect stoplights
             stoplight = self.stl_det.identify_stoplight(frame, drawing_frame=drawing_frame) if self.stl_det else None
                 
             # Detect signs in the frame
             self.last_signs = self.sd.get_confirmed_signs_nb(frame, drawing_frame=drawing_frame) if self.sd else []
+            if self.signs_action:
+                self.signs_action(self.last_signs)
 
             # Control speed based on stoplight state
             if stoplight is not None:
@@ -1187,7 +1344,7 @@ class TrackNavigator:
         if ignore_intersection:
             thr, yaw = lf.follow_line(frame, drawing_frame=drawing_frame)
         else:
-            thr, yaw = self.inav.navigate(frame, drawing_frame=drawing_frame)
+            thr, yaw = self.inav.navigate(frame, drawing_frame=drawing_frame, decision_func=self.dec_func)
         return thr, yaw
 
 # SHARED VISION PIPELINE

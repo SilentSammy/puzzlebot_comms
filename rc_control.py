@@ -3,23 +3,85 @@ import math
 import cv2
 import time
 from input_manager.input_man import is_pressed, is_toggled, rising_edge, get_axis
-from pb_http_client import PuzzlebotHttpClient  # your custom client for sending commands
+import pb_http_client  # your custom client for sending commands
 import visual_navigation as vn
 import yolo
 from collections import deque
+from videoplayer import VideoRecorder
+from buzzer import melodies
 
-turns = deque([3, 1, 2])
+# Recorders
+raw_recorder = VideoRecorder()
+annotated_recorder = VideoRecorder()
 
 # Connection
-# puzzlebot = PuzzlebotHttpClient("http://192.168.137.165:5000", safe_mode=True, id = 0)
-puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=False, id = 1)
+puzzlebot = pb_http_client.PuzzlebotHttpClient("http://192.168.137.165:5000", safe_mode=True, id = 0)
+# puzzlebot = PuzzlebotHttpClient("http://127.0.0.1:5001", safe_mode=False, id = 1)
+
+def end_sequence():
+    contr = vn.OpenLoopController()
+    # do a little wiggle dance at the end
+    wiggle_actions = [ (0, -math.radians(20), 0.5), (0, math.radians(20), 0.5), ]
+    wiggle_actions*= 2
+    wiggle_actions.insert(0, (0, math.radians(20), 0.75)) # Start with a slightly longer left turn
+
+    def start():
+        print("Starting end sequence...")
+        puzzlebot.play_buzzer(melodies["custom_success_chime"])
+        contr.start(wiggle_actions)
+    
+    def ongoing():
+        if contr.running():
+            print("Dancing...")
+            return contr.execute()
+    
+    return start, ongoing
+
+def signs_action(signs):
+    from visual_navigation import SignType, Sign
+    signs:list[Sign] = signs
+    tones = {
+        SignType.STOP: [
+            (523, 60), (0, 200), (523, 60), (0, 200), (392, 80), (0, 300)
+        ],
+        SignType.YIELD: [
+            (659, 40), (0, 120), (784, 40), (0, 120), (659, 40), (0, 120), (784, 60), (0, 200)
+        ],
+        SignType.ROAD_WORK: [
+            (349, 30), (0, 100), (392, 30), (0, 100), (440, 30), (0, 100),
+            (392, 30), (0, 100), (349, 30), (0, 100), (392, 30), (0, 100),
+            (440, 30), (0, 100), (392, 30), (0, 200)
+        ]
+    }
+    if not signs:
+        return
+    
+    # Get the closest sign
+    closest_sign = min(signs, key=lambda s: s.approx_dist)
+    if closest_sign.approx_dist < 0.65 and closest_sign.type in tones:
+        print(f"Detected sign: {closest_sign.type.name} at {closest_sign.approx_dist:.2f}m")
+        melody = tones[closest_sign.type]
+        puzzlebot.play_buzzer(melody)
+
+def decision_action(decision):
+    if decision == 0:  # backward
+        puzzlebot.play_buzzer(melodies["3_lows"])
+    elif decision == 1:  # left
+        puzzlebot.play_buzzer(melodies["falling_tone"])
+    elif decision == 2:  # right
+        puzzlebot.play_buzzer(melodies["rising_tone"])
+    elif decision == 3:  # forward
+        puzzlebot.play_buzzer(melodies["3_highs"])
+
+end_seq = end_sequence()
+turns = deque([3, 1, 2])
 
 # Navigation components
 line_foll = vn.LineFollower()
 sl_det = vn.StoplightDetector(
     hsv_val_range=(128, 255)
 )
-fl_det = vn.FlagDetector(pattern_size=(6, 3), square_size=0.05)
+fl_det = vn.FlagDetector(pattern_size=(4, 3), square_size=0.025)
 in_det = vn.IntersectionDetector(
     undistort=puzzlebot.id == 0,
     setpoint=0.675,
@@ -35,10 +97,11 @@ int_nav = vn.IntersectionNavigator(
     line_follower=line_foll,
     intersection_detector=in_det,
     decision_func=lambda _: turns.popleft() if turns else -1, # Use deque to cycle through turns
+    decision_action=decision_action,
     turn_left = [
-        (0.35, 0, 2.0),
+        (0.4, 0, 2.0),
         (0, math.radians(90), 5.0),
-        (0.35, 0, 2.0),
+        (0.4, 0, 2.0),
     ],
 )
 ol_con = vn.OpenLoopController(
@@ -46,13 +109,16 @@ ol_con = vn.OpenLoopController(
     angular_factor=1.1 if puzzlebot.id == 0 else 1.0,  # Adjust angular factor based on robot ID
 )
 sg_det = vn.SignDetector(
-    get_signs_func=yolo.get_signs,  # Uncomment this line to use YOLO for sign detection
+    get_signs_func=lambda f: yolo.get_signs(f),  # Uncomment this line to use YOLO for sign detection
 )
 track_nav = vn.TrackNavigator(
     intersection_navigator=int_nav,
-    # sign_detector=sg_det,
+    sign_detector=sg_det,
     flag_detector=fl_det,
     stoplight_detector=sl_det,
+    end_action=lambda: end_seq[0](),  # Optional end action
+    ongoing_end_action=lambda: end_seq[1](),  # Optional ongoing end action
+    signs_action=lambda s: signs_action(s),  # Optional action for detected signs
 )
 
 # Maximum values for throttle and yaw
@@ -105,10 +171,6 @@ def reset_nav_mode():
     nav_mode = 1
     print("Control mode: Manual")
 
-def choose_direction(frame):
-    from visual_navigation import choose_direction_nb
-    return choose_direction_nb(frame)
-
 def screenshot(frame):
     import os
 
@@ -133,39 +195,6 @@ def screenshot(frame):
     # Increment the count
     screenshot.count += 1
 
-def record(frame):
-    """
-    If frame is a valid image (numpy array), write it to the video file.
-    If frame is None, release the VideoWriter if it exists.
-    """
-    # Close the video if frame is None
-    if frame is None:
-        if hasattr(record, "vw"):
-            record.vw.release()
-            print("Video recording closed.")
-            del record.vw
-        return
-
-    # If VideoWriter hasn't been created yet, initialize it now
-    if not hasattr(record, "vw"):
-        fps = 30  # desired frame rate
-        height, width = frame.shape[:2]
-        
-        # Create a directory for video output if needed
-        record.dir_path = record.dir_path if hasattr(record, "dir_path") else "./resources/videos"
-        os.makedirs(record.dir_path, exist_ok=True)
-        
-        # Create a timestamped file name 
-        filename = os.path.join(record.dir_path, time.strftime("output_%Y-%m-%d_%H-%M-%S.mp4"))
-        
-        # Choose a codec that works well (e.g., 'mp4v')
-        fourcc = cv2.VideoWriter_fourcc(*'avc1')
-        record.vw = cv2.VideoWriter(filename, fourcc, fps, (width, height))
-        print(f"Video recording started: {filename}")
-    
-    # Append the frame to the video file
-    record.vw.write(frame)
-
 modes = [
     (('1', 'X'), "Manual Control", lambda: None),
     (('2', 'A'), "Follow Line with Stoplight", lambda: sl_nav.navigate(frame, drawing_frame)),
@@ -179,15 +208,24 @@ modes = [
 mode = 0
 try:
     while True:
+        
         # Inputs and outputs
         frame = puzzlebot.get_frame()
         drawing_frame = frame.copy()
+        if frame is None:
+            continue  # Skip if no frame is received
         throttle, yaw = 0, 0
 
         # Optional screenshot or recording
         if rising_edge('p'):
             screenshot(frame)
-        record(frame if is_toggled('o') else None)
+        if is_toggled('o'):
+            if not raw_recorder.is_recording():
+                raw_recorder.start(frame)
+            raw_recorder.write(frame)
+        else:
+            if raw_recorder.is_recording():
+                raw_recorder.stop()
 
         # Choose mode
         for i, m in enumerate(modes):
@@ -196,12 +234,13 @@ try:
                 print(f"Control mode: {m[1]}")
         
         # Execute the current mode
+        t2 = time.time()
         func = modes[mode][2]
         if func:
             result = func()
             if ( isinstance(result, tuple) and len(result) == 2 and all(isinstance(x, float) for x in result) ):
                 throttle, yaw = result
-        
+
         # Disable output for debugging
         if rising_edge('0'):
             print("Output" + (" disabled" if is_toggled('0') else " enabled"))
@@ -215,6 +254,15 @@ try:
 
         # Send control commands to the robot
         puzzlebot.send_vel(throttle, yaw, wait_for_completion=False)
+
+        # Optionally record the already annotated frame
+        if is_toggled('i'):
+            if not annotated_recorder.is_recording():
+                annotated_recorder.start(drawing_frame)
+            annotated_recorder.write(drawing_frame)
+        else:
+            if annotated_recorder.is_recording():
+                annotated_recorder.stop()
 
         # Show the frame
         show_frame(drawing_frame, "Puzzlebot Stream")
