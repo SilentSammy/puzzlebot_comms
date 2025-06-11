@@ -185,12 +185,12 @@ def screenshot(frame):
 
 modes = [
     (('1', 'X'), "Manual Control", lambda: None),
-    (('2', 'A'), "Follow Line with Stoplight", lambda: sl_nav.navigate(frame, drawing_frame)),
-    (('3'), "Follow Line", lambda: line_foll.follow_line(frame, drawing_frame)),
-    (('4'), "Follow Line with Intersection", lambda: int_nav.navigate(frame, drawing_frame)),
-    (('5'), "Stop at intersection", lambda: in_det.stop_at_intersection(frame, drawing_frame)),
-    (('6'), "SignDetector", lambda: sg_det.get_confirmed_signs_nb(frame, drawing_frame)),
-    (('7'), "Track Navigator", lambda: track_nav.navigate(frame, drawing_frame)),
+    (('2', 'A'), "Follow Line", lambda: line_foll.follow_line(frame, drawing_frame)),
+    (('3', 'B'), "Track Navigator", lambda: track_nav.navigate(frame, drawing_frame)),
+    (('4'), "Follow Line with Stoplight", lambda: sl_nav.navigate(frame, drawing_frame)),
+    (('5'), "Follow Line with Intersection", lambda: int_nav.navigate(frame, drawing_frame)),
+    (('6'), "Stop at intersection", lambda: in_det.stop_at_intersection(frame, drawing_frame)),
+    (('7'), "SignDetector", lambda: sg_det.get_confirmed_signs_nb(frame, drawing_frame)),
 ]
 
 mode = 0
@@ -205,7 +205,7 @@ try:
         throttle, yaw = 0, 0
         
         # Optionally play the buzzer
-        if is_pressed('b'):
+        if is_pressed('b', 'Y'):
             puzzlebot.play_buzzer(melodies["custom_success_chime"])
 
         # Optional screenshot or recording
