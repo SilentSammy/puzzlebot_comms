@@ -150,7 +150,7 @@ if __name__ == "__main__":
     # from yolo import get_signs
 
     line_foll = vn.LineFollower()
-    sl_det = vn.StoplightDetector(hsv_val_range=(120, 255))
+    sl_det = vn.StoplightDetector(hsv_val_range=(120, 255), brightness_thresh=120)
     fl_det = vn.FlagDetector(pattern_size=(4, 3), square_size=0.025)
     in_det = vn.IntersectionDetector()
     sl_nav = vn.StoplightNavigator(
@@ -215,12 +215,12 @@ if __name__ == "__main__":
         ("get_confirmed_signs_nb", lambda: sg_det.get_confirmed_signs(frame, drawing_frame)),
     ]
     
-    vp = VideoPlayer(r"resources\videos\stoplight_monday.mp4")  # Path to the video file
+    vp = VideoPlayer(r"resources/screenshots/dated/2025-05-24_19-10-33")  # Path to the video file
     # vp = VideoPlayer(r"http://192.168.137.165:5000/car_cam")  # Path to the video file
     re = keybrd.rising_edge # Function to check if a key is pressed once
     pr = keybrd.is_pressed  # Function to check if a key is held down
     tg = keybrd.is_toggled  # Function to check if a key is toggled
-    layers = stoplight_pipeline
+    layers = intersection_pipeline
     layer = 1
     
     while True:

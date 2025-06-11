@@ -67,3 +67,5 @@ pull: scp -r puzzlebot@192.168.43.125:/home/puzzlebot/ros2_ws/src/cam_navigation
 - record fking video and gtfo
 + only consider stoplight at the intersection (but read constantly)
 + if last_signs is available, use largest sign, otherwise use last_turn
+-- each class should have its own pipeline list
+- fix VideoRecorder to record in real time

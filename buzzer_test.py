@@ -196,68 +196,12 @@ modes = [
 mode = 0
 try:
     while True:
-        
-        # Inputs and outputs
-        frame = puzzlebot.get_frame()
-        drawing_frame = frame.copy()
-        if frame is None:
-            continue  # Skip if no frame is received
-        throttle, yaw = 0, 0
-        
         # Optionally play the buzzer
-        if is_pressed('b'):
-            puzzlebot.play_buzzer(melodies["custom_success_chime"])
+        for i, key in enumerate(melodies):
+            if is_pressed(str(i + 1)):
+                puzzlebot.play_buzzer(melodies[key])
+        time.sleep(0.1)
 
-        # Optional screenshot or recording
-        if rising_edge('p'):
-            screenshot(frame)
-        if is_toggled('o'):
-            if not raw_recorder.is_recording():
-                raw_recorder.start(frame)
-            raw_recorder.write(frame)
-        else:
-            if raw_recorder.is_recording():
-                raw_recorder.stop()
-
-        # Choose mode
-        for i, m in enumerate(modes):
-            if rising_edge(*m[0]):
-                mode = i
-                print(f"Control mode: {m[1]}")
-        
-        # Execute the current mode
-        t2 = time.time()
-        func = modes[mode][2]
-        if func:
-            result = func()
-            if ( isinstance(result, tuple) and len(result) == 2 and all(isinstance(x, float) for x in result) ):
-                throttle, yaw = result
-
-        # Disable output for debugging
-        if rising_edge('0'):
-            print("Output" + (" disabled" if is_toggled('0') else " enabled"))
-        if is_toggled('0'):
-            throttle = yaw = 0
-
-        # Always allow manual control
-        thr, yw = manual_control()
-        throttle += thr
-        yaw += yw
-
-        # Send control commands to the robot
-        puzzlebot.send_vel(throttle, yaw, wait_for_completion=False)
-
-        # Optionally record the already annotated frame
-        if is_toggled('i'):
-            if not annotated_recorder.is_recording():
-                annotated_recorder.start(drawing_frame)
-            annotated_recorder.write(drawing_frame)
-        else:
-            if annotated_recorder.is_recording():
-                annotated_recorder.stop()
-
-        # Show the frame
-        show_frame(drawing_frame, "Puzzlebot Stream")
 
 except KeyboardInterrupt:
     print("Exiting...")
