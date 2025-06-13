@@ -9,6 +9,7 @@ import yolo
 from collections import deque
 from videoplayer import VideoRecorder
 from buzzer import melodies
+import random
 
 # Recorders
 raw_recorder = VideoRecorder()
@@ -110,12 +111,12 @@ track_nav = vn.TrackNavigator(
 )
 
 # Maximum values for throttle and yaw
-max_yaw = math.radians(180)
-max_thr = 0.6
 
 def manual_control():
+    max_yaw = math.radians(180)
+    max_thr = 0.6
     slow_thr = 0.2
-    slow_yaw = math.radians(90)
+    slow_yaw = math.radians(60)
 
     # Get keyboard input
     keyvert = 1 if is_pressed('w') else -1 if is_pressed('s') else 0
@@ -133,8 +134,8 @@ def manual_control():
     yaw = keyhor if abs(keyhor) > abs(joyhor) else joyhor
     boost = max(conboost, keyboost)  # Use the higher value between rt and sh
 
-    if not puzzlebot.safe_mode:
-        boost = 0 # Disable boost in unsafe mode
+    # if not puzzlebot.safe_mode:
+    #     boost = 0 # Disable boost in unsafe mode
 
     # Interpolate from slow to max_thr based on the boost value
     thr *= slow_thr + (max_thr - slow_thr) * boost
@@ -206,7 +207,8 @@ try:
         
         # Optionally play the buzzer
         if is_pressed('b', 'Y'):
-            puzzlebot.play_buzzer(melodies["custom_success_chime"])
+            melody_name = list(melodies.keys())[:3]
+            puzzlebot.play_buzzer(melodies[random.choice(melody_name)])
 
         # Optional screenshot or recording
         if rising_edge('p'):

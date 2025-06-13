@@ -1,4 +1,44 @@
 melodies = {
+    "beep_beep": [
+        (392, 300),  # G4
+        (0, 100),    # pause
+        (392, 300),  # G4
+    ],
+    "beep_beep_high": [
+        (523, 200),  # C5, higher pitch, faster
+        (0, 80),     # pause
+        (523, 200),  # C5
+    ],
+    "beep_beep_low": [
+        (294, 400),  # D4, lower pitch, slower
+        (0, 150),    # pause
+        (294, 400),  # D4
+    ],
+    "dixie_horn": [
+        (740, 220),   # F#5 – strong opening note
+        (0,   80),   # rest
+        (622, 180),   # D#5
+        (0,   100),   # rest
+        (494, 160),   # B4
+        (0,    80),   # short rest
+        (494, 160),   # B4
+        (0,    80),   # short rest
+        (494, 160),   # B4
+        (0,   120),   # rest
+        (554, 180),   # C#5
+        (0,   100),   # rest
+        (622, 180),   # D#5
+        (0,   100),   # rest
+        (659, 200),   # E5 – slightly held
+        (0,    80),   # short rest
+        (740, 220),   # F#5 – held again
+        (0,    80),  
+        (740, 220),   # F#5
+        (0,    80),
+        (740, 220),   # F#5 – longest final cluster
+        (0,   180),   # longer closing rest
+        (622, 200),   # D#5 – gentle finish
+    ],
     "custom_success_chime": [
         (440, 200),  # A4
         (523, 200),  # C5
